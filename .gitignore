@@ -19,3 +19,4 @@ codemaps/
 .reports/
 .ccells-state.json
 .history
+.yarnrc.yml

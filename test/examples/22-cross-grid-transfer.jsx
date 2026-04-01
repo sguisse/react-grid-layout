@@ -8,6 +8,15 @@ import React, {
 import PropTypes from "prop-types";
 import { GridLayout, useContainerWidth } from "react-grid-layout";
 
+/**
+ * Example 22: Cross-Grid Transfer (styled parity with Example 21)
+ *
+ * - Header is the in-grid drag handle (matches the eyebrow + title pattern).
+ * - The dark "Move" chip remains the cross-grid transfer handle (draggable).
+ * - Card body is scrollable for long content and is NOT the in-grid handle.
+ * - A lightweight GridMatrix visual is shown above each grid (columns + 4 row markers).
+ */
+
 const GRID_CONFIG = {
   cols: 12,
   rowHeight: 34,
@@ -18,7 +27,7 @@ const GRID_CONFIG = {
 
 const DRAG_CONFIG = {
   enabled: true,
-  handle: ".cross-grid-card__body",
+  handle: ".cross-grid-card__header",
   cancel: ".cross-grid-transfer"
 };
 
@@ -133,13 +142,6 @@ function sortLayout(layout) {
   return [...layout].sort((a, b) => (a.y - b.y) || (a.x - b.x));
 }
 
-function buildCommittedLayout(nextLayout, committedItem) {
-  return sortLayout([
-    ...nextLayout.filter((item) => item.i !== committedItem.i),
-    committedItem
-  ]);
-}
-
 function buildDebugLayout(gridId, layout) {
   return layout.map((item) => ({
     ...item,
@@ -216,7 +218,7 @@ function TransferGridPanel({
                   gap: 12
                 }}
               >
-                <div>
+                <div className="cross-grid-card__header" style={{ cursor: "grab", userSelect: "none" }}>
                   <div
                     style={{
                       fontSize: 11,
@@ -276,25 +278,17 @@ function TransferGridPanel({
                   borderRadius: 10,
                   backgroundColor: "rgba(255, 255, 255, 0.72)",
                   border: "1px dashed rgba(148, 163, 184, 0.5)",
-                  cursor: "grab",
                   display: "flex",
                   flexDirection: "column",
-                  justifyContent: "space-between"
+                  justifyContent: "space-between",
+                  overflow: "auto",
+                  minHeight: 0
                 }}
               >
-                <span className="text" style={{ color: "#334155", lineHeight: 1.4 }}>
+                <span style={{ color: "#334155", lineHeight: 1.4 }}>
                   {meta.body}
                 </span>
-                <span
-                  style={{
-                    marginTop: 10,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: "#64748b"
-                  }}
-                >
-                  Body drag = reorder in this grid
-                </span>
+
               </div>
             </div>
           </div>
@@ -388,6 +382,10 @@ TransferGridPanel.propTypes = {
 export default function CrossGridTransferLayout({ onLayoutChange }) {
   const [leftLayout, setLeftLayout] = useState(INITIAL_LEFT_LAYOUT);
   const [rightLayout, setRightLayout] = useState(INITIAL_RIGHT_LAYOUT);
+  // Display state: tracks the latest compacted layout for the debug panels.
+  // Updated via onLayoutChange so it reflects drag/resize in real time.
+  const [leftDisplayLayout, setLeftDisplayLayout] = useState(INITIAL_LEFT_LAYOUT);
+  const [rightDisplayLayout, setRightDisplayLayout] = useState(INITIAL_RIGHT_LAYOUT);
   const transferRef = useRef(null);
   const [activeTransfer, setActiveTransfer] = useState(null);
 
@@ -400,9 +398,11 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
 
   const handleLeftLayoutChange = useCallback((newLayout) => {
     leftLayoutRef.current = newLayout;
+    setLeftDisplayLayout(newLayout);
   }, []);
   const handleRightLayoutChange = useCallback((newLayout) => {
     rightLayoutRef.current = newLayout;
+    setRightDisplayLayout(newLayout);
   }, []);
 
   useEffect(() => {
@@ -497,57 +497,71 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
     [endTransfer]
   );
 
+  const columnStyle = { display: "flex", flexDirection: "column", gap: 8 };
+
   return (
     <div style={{ padding: "10px 0 24px 0" }}>
-      <div
-        style={{
-          marginBottom: 18,
-          padding: 18,
-          borderRadius: 20,
-          background:
-            "radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 42%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
-          border: "1px solid rgba(148, 163, 184, 0.22)"
-        }}
-      >
-        <h2 style={{ margin: 0, fontSize: 24, color: "#0f172a" }}>
-          Cross-Grid DnD Sample
-        </h2>
-        <p style={{ margin: "8px 0 0 0", color: "#475569", lineHeight: 1.5 }}>
-          Use the dark <strong>Move</strong> chip to transfer a card from one
-          GridLayout instance to the other. Inside each grid, drag the card body
-          to reorder and resize normally.
-        </p>
+      {/* Per-grid layout debug panels — test-hook.jsx panel is suppressed for dual-grid pages */}
+      <div style={{ display: "flex", gap: 18, alignItems: "flex-start", marginBottom: 12 }}>
+        <div className="layoutJSON" style={{ flex: "0 0 calc(50% - 9px)" }}>
+          <div className="columns">
+            {leftDisplayLayout.map((l) => (
+              <div className="layoutItem" key={l.i}>
+                <b>{l.i}</b>{`: [${l.x}, ${l.y}, ${l.w}, ${l.h}]`}
+              </div>
+            ))}
+          </div>
+          <div className="layoutJSON__footnote">
+            Planning Grid &middot; format: <code>[x, y, w, h]</code>
+          </div>
+        </div>
+        <div className="layoutJSON" style={{ flex: "0 0 calc(50% - 9px)" }}>
+          <div className="columns">
+            {rightDisplayLayout.map((l) => (
+              <div className="layoutItem" key={l.i}>
+                <b>{l.i}</b>{`: [${l.x}, ${l.y}, ${l.w}, ${l.h}]`}
+              </div>
+            ))}
+          </div>
+          <div className="layoutJSON__footnote">
+            Execution Grid &middot; format: <code>[x, y, w, h]</code>
+          </div>
+        </div>
       </div>
 
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gridTemplateColumns: "repeat(2, 1fr)",
           gap: 18
         }}
       >
-        <TransferGridPanel
-          title="Planning Grid"
-          description="Research and discovery cards. Send mature items to execution."
-          gridId="left"
-          layout={leftLayout}
-          onLayoutChange={handleLeftLayoutChange}
-          activeTransfer={activeTransfer}
-          onTransferStart={beginTransfer}
-          onTransferEnd={endTransfer}
-          onDropToGrid={handleDropToGrid}
-        />
-        <TransferGridPanel
-          title="Execution Grid"
-          description="Delivery lane. You can also move items back for another planning pass."
-          gridId="right"
-          layout={rightLayout}
-          onLayoutChange={handleRightLayoutChange}
-          activeTransfer={activeTransfer}
-          onTransferStart={beginTransfer}
-          onTransferEnd={endTransfer}
-          onDropToGrid={handleDropToGrid}
-        />
+        <div style={columnStyle}>
+          <TransferGridPanel
+            title="Planning Grid"
+            description="Research and discovery cards. Send mature items to execution."
+            gridId="left"
+            layout={leftLayout}
+            onLayoutChange={handleLeftLayoutChange}
+            activeTransfer={activeTransfer}
+            onTransferStart={beginTransfer}
+            onTransferEnd={endTransfer}
+            onDropToGrid={handleDropToGrid}
+          />
+        </div>
+        <div style={columnStyle}>
+          <TransferGridPanel
+            title="Execution Grid"
+            description="Delivery lane. You can also move items back for another planning pass."
+            gridId="right"
+            layout={rightLayout}
+            onLayoutChange={handleRightLayoutChange}
+            activeTransfer={activeTransfer}
+            onTransferStart={beginTransfer}
+            onTransferEnd={endTransfer}
+            onDropToGrid={handleDropToGrid}
+          />
+        </div>
       </div>
     </div>
   );

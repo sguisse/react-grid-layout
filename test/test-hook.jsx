@@ -27,15 +27,20 @@ export default function makeLayout(Layout) {
     }
 
     render() {
+      // Dual-grid examples (items prefixed "left:" / "right:") manage their own
+      // layout debug panels inline — suppress the default single-panel here.
+      const isDualGrid = this.state.layout.some((l) => String(l.i).includes(":"));
       return (
         <React.StrictMode>
           <div>
-            <div className="layoutJSON">
-              <div className="columns">{this.stringifyLayout()}</div>
-              <div className="layoutJSON__footnote">
-                format: <code>[x, y, w, h]</code>
+            {!isDualGrid && (
+              <div className="layoutJSON">
+                <div className="columns">{this.stringifyLayout()}</div>
+                <div className="layoutJSON__footnote">
+                  format: <code>[x, y, w, h]</code>
+                </div>
               </div>
-            </div>
+            )}
             <Layout onLayoutChange={this.onLayoutChange} />
           </div>
         </React.StrictMode>

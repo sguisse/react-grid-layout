@@ -19,7 +19,7 @@ RGL is React-only and does not require jQuery.
 
 ## Table of Contents
 
-- [What's New in v2](#whats-new-in-v2)
+- [What&#39;s New in v2](#whats-new-in-v2)
 - [Migrating from v1](#migrating-from-v1)
 - [Demos](#demos)
 - [Features](#features)
@@ -29,7 +29,7 @@ RGL is React-only and does not require jQuery.
 - [Providing Grid Width](#providing-grid-width)
 - [Hooks API](#hooks-api)
 - [API Reference](#api-reference)
-- [Extending: Custom Compactors & Position Strategies](#extending-custom-compactors--position-strategies)
+- [Extending: Custom Compactors &amp; Position Strategies](#extending-custom-compactors--position-strategies)
 - [Extras](#extras)
 - [Performance](#performance)
 - [Contribute](#contribute)
@@ -57,15 +57,15 @@ Version 2 is a complete TypeScript rewrite with a modernized API:
 
 See the [RFC](./rfcs/0001-v2-typescript-rewrite.md#breaking-changes-in-v2) for detailed migration examples.
 
-| Change                                                                                                               | Description                                                                                            |
-| -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| [`width` prop required](./rfcs/0001-v2-typescript-rewrite.md#breaking-changes-in-v2)                                 | Use `useContainerWidth` hook or provide your own measurement                                           |
-| [`onDragStart` threshold](./rfcs/0001-v2-typescript-rewrite.md#1-ondragstart-no-longer-fires-on-click-only-events)   | Now fires after 3px movement, not on mousedown. Use `onMouseDown` for immediate response               |
-| [Immutable callbacks](./rfcs/0001-v2-typescript-rewrite.md#2-immutable-callback-parameters)                          | Callback parameters are read-only. Use `onLayoutChange` or constraints instead of mutation             |
+| Change                                                                                                              | Description                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| [`width` prop required](./rfcs/0001-v2-typescript-rewrite.md#breaking-changes-in-v2)                                 | Use `useContainerWidth` hook or provide your own measurement                                             |
+| [`onDragStart` threshold](./rfcs/0001-v2-typescript-rewrite.md#1-ondragstart-no-longer-fires-on-click-only-events)   | Now fires after 3px movement, not on mousedown. Use `onMouseDown` for immediate response                 |
+| [Immutable callbacks](./rfcs/0001-v2-typescript-rewrite.md#2-immutable-callback-parameters)                            | Callback parameters are read-only. Use `onLayoutChange` or constraints instead of mutation               |
 | [`data-grid` in legacy only](./rfcs/0001-v2-typescript-rewrite.md#3-data-grid-prop-only-available-in-legacy-wrapper) | v2 requires explicit `layout` prop. Use legacy wrapper for `data-grid`                                 |
-| [Pluggable compaction](./rfcs/0001-v2-typescript-rewrite.md#4-pluggable-compaction-algorithms)                       | Compaction is now pluggable via `Compactor` interface. Optional fast O(n log n) algorithm in `/extras` |
-| UMD bundle removed                                                                                                   | Use a bundler (Vite, webpack, esbuild)                                                                 |
-| `verticalCompact` removed                                                                                            | Use `compactType={null}` or `compactor={noCompactor}`                                                  |
+| [Pluggable compaction](./rfcs/0001-v2-typescript-rewrite.md#4-pluggable-compaction-algorithms)                         | Compaction is now pluggable via `Compactor` interface. Optional fast O(n log n) algorithm in `/extras` |
+| UMD bundle removed                                                                                                  | Use a bundler (Vite, webpack, esbuild)                                                                     |
+| `verticalCompact` removed                                                                                         | Use `compactType={null}` or `compactor={noCompactor}`                                                  |
 
 ## Migrating from v1
 
@@ -80,10 +80,10 @@ This provides **100% runtime API compatibility** with v1.
 
 **TypeScript users**: If you were using `@types/react-grid-layout`, note that v2 includes its own types with some naming changes:
 
-| Old (`@types/react-grid-layout`) | New (v2)            | Notes                   |
-| -------------------------------- | ------------------- | ----------------------- |
-| `RGL.Layout`                     | `LayoutItem`        | Single grid item        |
-| `RGL.Layout[]`                   | `Layout`            | Array of items          |
+| Old (`@types/react-grid-layout`) | New (v2)              | Notes                    |
+| ---------------------------------- | --------------------- | ------------------------ |
+| `RGL.Layout`                     | `LayoutItem`        | Single grid item         |
+| `RGL.Layout[]`                   | `Layout`            | Array of items           |
 | `RGL.Layouts`                    | `ResponsiveLayouts` | Breakpoint → layout map |
 
 ```diff
@@ -121,38 +121,38 @@ function MyGrid() {
 }
 ```
 
-| Use Case             | Recommendation                     |
-| -------------------- | ---------------------------------- |
+| Use Case             | Recommendation                       |
+| -------------------- | ------------------------------------ |
 | Existing v1 codebase | `react-grid-layout/legacy`         |
-| New project          | v2 API with hooks                  |
+| New project          | v2 API with hooks                    |
 | Custom compaction    | v2 with custom `Compactor`         |
 | SSR                  | v2 with `measureBeforeMount: true` |
 
 ## Demos
 
 1. [Showcase](https://react-grid-layout.github.io/react-grid-layout/examples/00-showcase.html)
-1. [Basic](https://react-grid-layout.github.io/react-grid-layout/examples/01-basic.html)
-1. [No Dragging/Resizing (Layout Only)](https://react-grid-layout.github.io/react-grid-layout/examples/02-no-dragging.html)
-1. [Messy Layout Autocorrect](https://react-grid-layout.github.io/react-grid-layout/examples/03-messy.html)
-1. [Layout Defined on Children](https://react-grid-layout.github.io/react-grid-layout/examples/04-grid-property.html)
-1. [Static Elements](https://react-grid-layout.github.io/react-grid-layout/examples/05-static-elements.html)
-1. [Adding/Removing Elements](https://react-grid-layout.github.io/react-grid-layout/examples/06-dynamic-add-remove.html)
-1. [Saving Layout to LocalStorage](https://react-grid-layout.github.io/react-grid-layout/examples/07-localstorage.html)
-1. [Saving a Responsive Layout to LocalStorage](https://react-grid-layout.github.io/react-grid-layout/examples/08-localstorage-responsive.html)
-1. [Minimum and Maximum Width/Height](https://react-grid-layout.github.io/react-grid-layout/examples/09-min-max-wh.html)
-1. [Dynamic Minimum and Maximum Width/Height](https://react-grid-layout.github.io/react-grid-layout/examples/10-dynamic-min-max-wh.html)
-1. [Toolbox](https://react-grid-layout.github.io/react-grid-layout/examples/11-toolbox.html)
-1. [Drag From Outside](https://react-grid-layout.github.io/react-grid-layout/examples/12-drag-from-outside.html)
-1. [Bounded Layout](https://react-grid-layout.github.io/react-grid-layout/examples/13-bounded.html)
-1. [Responsive Bootstrap-style Layout](https://react-grid-layout.github.io/react-grid-layout/examples/14-responsive-bootstrap-style.html)
-1. [Scaled Containers](https://react-grid-layout.github.io/react-grid-layout/examples/15-scale.html)
-1. [Allow Overlap](https://react-grid-layout.github.io/react-grid-layout/examples/16-allow-overlap.html)
-1. [All Resizable Handles](https://react-grid-layout.github.io/react-grid-layout/examples/17-resizable-handles.html)
-1. [Compactor Showcase](https://react-grid-layout.github.io/react-grid-layout/examples/18-compactors.html)
-1. [Pluggable Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/19-constraints.html)
-1. [Aspect Ratio Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/20-aspect-ratio.html)
-1. [Custom Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/21-custom-constraints.html)
-1. [Cross-Grid Transfer](https://react-grid-layout.github.io/react-grid-layout/examples/22-cross-grid-transfer.html)
+2. [Basic](https://react-grid-layout.github.io/react-grid-layout/examples/01-basic.html)
+3. [No Dragging/Resizing (Layout Only)](https://react-grid-layout.github.io/react-grid-layout/examples/02-no-dragging.html)
+4. [Messy Layout Autocorrect](https://react-grid-layout.github.io/react-grid-layout/examples/03-messy.html)
+5. [Layout Defined on Children](https://react-grid-layout.github.io/react-grid-layout/examples/04-grid-property.html)
+6. [Static Elements](https://react-grid-layout.github.io/react-grid-layout/examples/05-static-elements.html)
+7. [Adding/Removing Elements](https://react-grid-layout.github.io/react-grid-layout/examples/06-dynamic-add-remove.html)
+8. [Saving Layout to LocalStorage](https://react-grid-layout.github.io/react-grid-layout/examples/07-localstorage.html)
+9. [Saving a Responsive Layout to LocalStorage](https://react-grid-layout.github.io/react-grid-layout/examples/08-localstorage-responsive.html)
+10. [Minimum and Maximum Width/Height](https://react-grid-layout.github.io/react-grid-layout/examples/09-min-max-wh.html)
+11. [Dynamic Minimum and Maximum Width/Height](https://react-grid-layout.github.io/react-grid-layout/examples/10-dynamic-min-max-wh.html)
+12. [Toolbox](https://react-grid-layout.github.io/react-grid-layout/examples/11-toolbox.html)
+13. [Drag From Outside](https://react-grid-layout.github.io/react-grid-layout/examples/12-drag-from-outside.html)
+14. [Bounded Layout](https://react-grid-layout.github.io/react-grid-layout/examples/13-bounded.html)
+15. [Responsive Bootstrap-style Layout](https://react-grid-layout.github.io/react-grid-layout/examples/14-responsive-bootstrap-style.html)
+16. [Scaled Containers](https://react-grid-layout.github.io/react-grid-layout/examples/15-scale.html)
+17. [Allow Overlap](https://react-grid-layout.github.io/react-grid-layout/examples/16-allow-overlap.html)
+18. [All Resizable Handles](https://react-grid-layout.github.io/react-grid-layout/examples/17-resizable-handles.html)
+19. [Compactor Showcase](https://react-grid-layout.github.io/react-grid-layout/examples/18-compactors.html)
+20. [Pluggable Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/19-constraints.html)
+21. [Aspect Ratio Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/20-aspect-ratio.html)
+22. [Custom Constraints](https://react-grid-layout.github.io/react-grid-layout/examples/21-custom-constraints.html)
+23. [Cross-Grid Transfer](https://react-grid-layout.github.io/react-grid-layout/examples/22-cross-grid-transfer.html)
 
 #### Projects Using React-Grid-Layout
 
@@ -338,8 +338,8 @@ function MyGrid() {
 
 The v2 API provides three hooks for different use cases. Choose based on your needs:
 
-| Hook                  | Use When                                                             |
-| --------------------- | -------------------------------------------------------------------- |
+| Hook                    | Use When                                                             |
+| ----------------------- | -------------------------------------------------------------------- |
 | `useContainerWidth`   | You need responsive width measurement (most common)                  |
 | `useGridLayout`       | You're building a custom grid component or need direct state control |
 | `useResponsiveLayout` | You're building a custom responsive grid with breakpoint logic       |
@@ -1164,19 +1164,19 @@ import {
 
 **Performance Benchmarks:**
 
-| Items | Standard Vertical | Fast Vertical | Speedup |
-| ----- | ----------------- | ------------- | ------- |
-| 50    | 112 µs            | 19 µs         | **6x**  |
-| 100   | 203 µs            | 36 µs         | **6x**  |
-| 200   | 821 µs            | 51 µs         | **16x** |
-| 500   | 5.7 ms            | 129 µs        | **45x** |
+| Items | Standard Vertical | Fast Vertical | Speedup       |
+| ----- | ----------------- | ------------- | ------------- |
+| 50    | 112 µs           | 19 µs        | **6x**  |
+| 100   | 203 µs           | 36 µs        | **6x**  |
+| 200   | 821 µs           | 51 µs        | **16x** |
+| 500   | 5.7 ms            | 129 µs       | **45x** |
 
-| Items | Standard Horizontal | Fast Horizontal | Speedup |
-| ----- | ------------------- | --------------- | ------- |
-| 50    | 164 µs              | 12 µs           | **14x** |
-| 100   | 477 µs              | 25 µs           | **19x** |
-| 200   | 1.1 ms              | 42 µs           | **26x** |
-| 500   | 9.5 ms              | 128 µs          | **74x** |
+| Items | Standard Horizontal | Fast Horizontal | Speedup       |
+| ----- | ------------------- | --------------- | ------------- |
+| 50    | 164 µs             | 12 µs          | **14x** |
+| 100   | 477 µs             | 25 µs          | **19x** |
+| 200   | 1.1 ms              | 42 µs          | **26x** |
+| 500   | 9.5 ms              | 128 µs         | **74x** |
 
 **Correctness:**
 
