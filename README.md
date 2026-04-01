@@ -1,6 +1,7 @@
 # React-Grid-Layout ==> Forked
 
-see original [README-origin.md](README-origin.md)
+- See original [README-origin.md](README-origin.md)
+- [Forked repo](https://github.com/sguisse/react-grid-layout)
 
 ## DND-kit migration & cross-grid drag-and-drop
 
@@ -18,8 +19,8 @@ Fork based from :
 React-Grid-Layout is **THE** library for building responsive grid layouts in React applications. However, it lacked native support for dragging items between different grid instances (cross-grid drag-and-drop). This limitation was a common pain point for users who wanted to organize their layouts across multiple sections or dashboards. Without this limitation this library is the best solution for building complex grid layouts in React, but the lack of cross-grid DnD was a significant drawback for many use cases.
 Many people in the community asked for this functionality :
 
-* https://github.com/react-grid-layout/react-grid-layout/pull/1462
-* https://github.com/react-grid-layout/react-grid-layout/discussions/2078#discussioncomment-15990728
+- https://github.com/react-grid-layout/react-grid-layout/pull/1462
+- https://github.com/react-grid-layout/react-grid-layout/discussions/2078#discussioncomment-15990728
 
 ## Why use Dnd-Kit
 
@@ -36,6 +37,13 @@ Many people in the community asked for this functionality :
   - `@dnd-kit/abstract` (v0.3.2)
 - The older `react-draggable` / `react-resizable` primitives were removed from the grid internals in favor of DND-kit primitives and custom positioning/collision strategies.
 - A little bit of source code, ...
+
+## How I have done the migration
+
+- After trying several different approaches, I finally achieved a successful migration by building a dedicated team of AI agents and custom skills to handle the heavy lifting.
+  - The most challenging part was engineering the specific instructions needed to structure the team effectively.
+  - I’ve left the implementation details in the `tools` folder if you’d like to explore them
+  - Just keep in mind that the current version isn't quite 'plug-and-play' for repeated runs yet!
 
 ## Demo / sample
 
@@ -78,3 +86,7 @@ http://localhost:4002/react-grid-layout/examples/22-cross-grid-transfer.html
 
 - The public Grid API remains mostly compatible, but internals and event flows changed — if you implement custom grid children, ensure they forward refs and standard event props (`style`, `className`, `onMouseDown`, `onMouseUp`, `onTouchEnd`).
 - The repository recommends using `yarn` to avoid npm peer-dependency resolution differences.
+
+## Sample
+
+![22-cross-grid-transfer.png](22-cross-grid-transfer.png)
