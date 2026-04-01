@@ -7,6 +7,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { deepEqual } from "fast-equals";
+
 import type {
   Layout,
   Breakpoint,
@@ -23,14 +24,8 @@ import {
 } from "../../core/responsive.js";
 import { verticalCompactor } from "../../core/compactors.js";
 
-// ============================================================================
-// Types
-// ============================================================================
-
-/** Default breakpoint names */
 export type DefaultBreakpoints = "lg" | "md" | "sm" | "xs" | "xxs";
 
-/** Default breakpoint widths */
 export const DEFAULT_BREAKPOINTS: Breakpoints<DefaultBreakpoints> = {
   lg: 1200,
   md: 996,
@@ -39,7 +34,6 @@ export const DEFAULT_BREAKPOINTS: Breakpoints<DefaultBreakpoints> = {
   xxs: 0
 };
 
-/** Default column counts per breakpoint */
 export const DEFAULT_COLS: Breakpoints<DefaultBreakpoints> = {
   lg: 12,
   md: 10,
@@ -51,21 +45,14 @@ export const DEFAULT_COLS: Breakpoints<DefaultBreakpoints> = {
 export interface UseResponsiveLayoutOptions<
   B extends Breakpoint = DefaultBreakpoints
 > {
-  /** Current container width */
   width: number;
-  /** Breakpoint definitions (name → min-width) */
+  breakpoint?: B;
   breakpoints?: Breakpoints<B>;
-  /** Column counts per breakpoint */
   cols?: Breakpoints<B>;
-  /** Layouts for each breakpoint */
   layouts?: ResponsiveLayouts<B>;
-  /** Compactor for layout compaction (default: verticalCompactor) */
   compactor?: Compactor;
-  /** Called when breakpoint changes */
   onBreakpointChange?: (newBreakpoint: B, cols: number) => void;
-  /** Called when layout changes */
   onLayoutChange?: (layout: Layout, layouts: ResponsiveLayouts<B>) => void;
-  /** Called when width changes */
   onWidthChange?: (
     width: number,
     margin: readonly [number, number],
@@ -77,62 +64,36 @@ export interface UseResponsiveLayoutOptions<
 export interface UseResponsiveLayoutResult<
   B extends Breakpoint = DefaultBreakpoints
 > {
-  /** Current layout for the active breakpoint */
   layout: Layout;
-  /** All layouts by breakpoint */
   layouts: ResponsiveLayouts<B>;
-  /** Current active breakpoint */
   breakpoint: B;
-  /** Column count for the current breakpoint */
   cols: number;
-  /** Update layouts for a specific breakpoint */
   setLayoutForBreakpoint: (breakpoint: B, layout: Layout) => void;
-  /** Update all layouts */
   setLayouts: (layouts: ResponsiveLayouts<B>) => void;
-  /** Sorted array of breakpoint names (smallest to largest) */
   sortedBreakpoints: B[];
 }
 
-// ============================================================================
-// Hook Implementation
-// ============================================================================
+function cloneResponsiveLayouts<B extends Breakpoint>(
+  layouts: ResponsiveLayouts<B>
+): ResponsiveLayouts<B> {
+  const cloned = {} as ResponsiveLayouts<B>;
 
-/**
- * Hook for managing responsive grid layouts.
- *
- * Automatically selects the appropriate layout based on container width
- * and generates layouts for new breakpoints from existing ones.
- *
- * @example
- * ```tsx
- * function MyResponsiveGrid() {
- *   const { width, containerRef } = useContainerWidth();
- *   const { layout, breakpoint, cols } = useResponsiveLayout({
- *     width,
- *     layouts: {
- *       lg: [...],
- *       md: [...],
- *       sm: [...]
- *     }
- *   });
- *
- *   return (
- *     <div ref={containerRef}>
- *       <GridLayout
- *         width={width}
- *         cols={cols}
- *         layout={layout}
- *       />
- *     </div>
- *   );
- * }
- * ```
- */
+  for (const breakpoint of Object.keys(layouts) as B[]) {
+    const layout = layouts[breakpoint];
+    if (layout) {
+      (cloned as Record<B, Layout>)[breakpoint] = cloneLayout(layout);
+    }
+  }
+
+  return cloned;
+}
+
 export function useResponsiveLayout<B extends Breakpoint = DefaultBreakpoints>(
   options: UseResponsiveLayoutOptions<B>
 ): UseResponsiveLayoutResult<B> {
   const {
     width,
+    breakpoint: breakpointProp,
     breakpoints = DEFAULT_BREAKPOINTS as unknown as Breakpoints<B>,
     cols: colsConfig = DEFAULT_COLS as unknown as Breakpoints<B>,
     layouts: propsLayouts = {} as ResponsiveLayouts<B>,
@@ -142,153 +103,139 @@ export function useResponsiveLayout<B extends Breakpoint = DefaultBreakpoints>(
     onWidthChange
   } = options;
 
-  // Sorted breakpoints for consistent ordering
   const sortedBreakpoints = useMemo(
-    () => sortBreakpoints(breakpoints),
+    () => sortBreakpoints(breakpoints) as B[],
     [breakpoints]
   );
-
-  // Calculate initial breakpoint and cols
   const initialBreakpoint = useMemo(
-    () => getBreakpointFromWidth(breakpoints, width),
-    // Only calculate on mount, not on width changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => breakpointProp ?? getBreakpointFromWidth(breakpoints, width),
     []
   );
-
-  const initialCols = useMemo(
-    () => getColsFromBreakpoint(initialBreakpoint, colsConfig),
-    [initialBreakpoint, colsConfig]
+  const [layoutsState, setLayoutsState] = useState<ResponsiveLayouts<B>>(() =>
+    cloneResponsiveLayouts(propsLayouts)
   );
 
-  // State
-  const [breakpoint, setBreakpoint] = useState<B>(initialBreakpoint);
-  const [cols, setCols] = useState<number>(initialCols);
-  const [layouts, setLayoutsState] = useState<ResponsiveLayouts<B>>(() => {
-    // Clone initial layouts
-    const cloned = {} as ResponsiveLayouts<B>;
-    for (const bp of sortedBreakpoints) {
-      const layout = propsLayouts[bp];
-      if (layout) {
-        (cloned as Record<B, Layout>)[bp] = cloneLayout(layout);
-      }
-    }
-    return cloned;
-  });
-
-  // Track previous values for change detection
   const prevWidthRef = useRef(width);
-  const prevBreakpointRef = useRef(breakpoint);
-  // Separate refs for props vs state to prevent infinite loops (#2202)
-  // When using inline objects for layouts prop, we need to compare props to props
-  // and state to state, not mix them up.
+  const prevBreakpointRef = useRef(initialBreakpoint);
+  const prevBreakpointsRef = useRef(breakpoints);
+  const prevColsRef = useRef(colsConfig);
   const prevPropsLayoutsRef = useRef(propsLayouts);
-  const prevLayoutsRef = useRef(layouts);
+  const prevLayoutsRef = useRef(layoutsState);
+  const layoutsRef = useRef(layoutsState);
 
-  // Current layout for the active breakpoint - use compactor (#2213)
-  const layout = useMemo(() => {
-    return findOrGenerateResponsiveLayout(
-      layouts,
-      breakpoints,
-      breakpoint,
-      prevBreakpointRef.current,
-      cols,
-      compactor
-    );
-  }, [layouts, breakpoints, breakpoint, cols, compactor]);
+  const currentBreakpoint = breakpointProp ?? getBreakpointFromWidth(breakpoints, width);
+  const currentCols = getColsFromBreakpoint(currentBreakpoint, colsConfig);
+  const propsLayoutsChanged = !deepEqual(propsLayouts, prevPropsLayoutsRef.current);
 
-  // Set layout for a specific breakpoint
-  const setLayoutForBreakpoint = useCallback((bp: B, newLayout: Layout) => {
-    setLayoutsState((prev: ResponsiveLayouts<B>) => ({
-      ...prev,
-      [bp]: cloneLayout(newLayout)
+  const sourceLayouts = useMemo(
+    () =>
+      propsLayoutsChanged ? cloneResponsiveLayouts(propsLayouts) : layoutsState,
+    [propsLayoutsChanged, propsLayouts, layoutsState]
+  );
+
+  const layout = useMemo(
+    () =>
+      findOrGenerateResponsiveLayout(
+        sourceLayouts,
+        breakpoints,
+        currentBreakpoint,
+        prevBreakpointRef.current,
+        currentCols,
+        compactor
+      ),
+    [sourceLayouts, breakpoints, currentBreakpoint, currentCols, compactor]
+  );
+
+  const effectiveLayouts = useMemo(() => {
+    const currentLayout = sourceLayouts[currentBreakpoint];
+    if (currentLayout && deepEqual(currentLayout, layout)) {
+      return sourceLayouts;
+    }
+
+    return {
+      ...sourceLayouts,
+      [currentBreakpoint]: cloneLayout(layout)
+    } as ResponsiveLayouts<B>;
+  }, [sourceLayouts, currentBreakpoint, layout]);
+
+  const setLayoutForBreakpoint = useCallback((breakpoint: B, layout: Layout) => {
+    setLayoutsState((previousLayouts) => ({
+      ...previousLayouts,
+      [breakpoint]: cloneLayout(layout)
     }));
   }, []);
 
-  // Set all layouts
-  const setLayouts = useCallback((newLayouts: ResponsiveLayouts<B>) => {
-    const cloned = {} as ResponsiveLayouts<B>;
-    for (const bp of Object.keys(newLayouts) as B[]) {
-      const layoutForBp = newLayouts[bp];
-      if (layoutForBp) {
-        (cloned as Record<B, Layout>)[bp] = cloneLayout(layoutForBp);
-      }
-    }
-    setLayoutsState(cloned);
+  const setLayouts = useCallback((layouts: ResponsiveLayouts<B>) => {
+    setLayoutsState(cloneResponsiveLayouts(layouts));
   }, []);
 
-  // Handle width changes
   useEffect(() => {
-    if (prevWidthRef.current === width) return;
+    layoutsRef.current = layoutsState;
+  }, [layoutsState]);
+
+  useEffect(() => {
+    if (!propsLayoutsChanged) {
+      return;
+    }
+
+    const nextLayouts = cloneResponsiveLayouts(propsLayouts);
+    setLayoutsState(nextLayouts);
+    layoutsRef.current = nextLayouts;
+    prevPropsLayoutsRef.current = propsLayouts;
+  }, [propsLayoutsChanged, propsLayouts]);
+
+  useEffect(() => {
+    const widthChanged = width !== prevWidthRef.current;
+    const breakpointChanged = currentBreakpoint !== prevBreakpointRef.current;
+    const breakpointsChanged = !deepEqual(breakpoints, prevBreakpointsRef.current);
+    const colsChanged = !deepEqual(colsConfig, prevColsRef.current);
+    const layoutsChanged = !deepEqual(effectiveLayouts, layoutsRef.current);
+
+    if (layoutsChanged) {
+      setLayoutsState(effectiveLayouts);
+      layoutsRef.current = effectiveLayouts;
+    }
+
+    if (widthChanged || breakpointChanged || breakpointsChanged || colsChanged) {
+      onWidthChange?.(width, [10, 10], currentCols, null);
+
+      if (breakpointChanged || breakpointsChanged || colsChanged) {
+        onBreakpointChange?.(currentBreakpoint, currentCols);
+      }
+    }
+
+    if (layoutsChanged && !propsLayoutsChanged) {
+      onLayoutChange?.(layout, effectiveLayouts);
+    }
+
     prevWidthRef.current = width;
-
-    // Determine new breakpoint
-    const newBreakpoint = getBreakpointFromWidth(breakpoints, width);
-    const newCols = getColsFromBreakpoint(newBreakpoint, colsConfig);
-
-    // Notify width change
-    onWidthChange?.(width, [10, 10], newCols, null);
-
-    // Check if breakpoint changed
-    if (newBreakpoint !== breakpoint) {
-      // Generate layout for new breakpoint
-      // Use compactor (#2213)
-      const newLayout = findOrGenerateResponsiveLayout(
-        layouts,
-        breakpoints,
-        newBreakpoint,
-        breakpoint,
-        newCols,
-        compactor
-      );
-
-      // Update layouts with the new breakpoint layout
-      const updatedLayouts: ResponsiveLayouts<B> = {
-        ...layouts,
-        [newBreakpoint]: newLayout
-      };
-
-      setLayoutsState(updatedLayouts);
-      setBreakpoint(newBreakpoint);
-      setCols(newCols);
-
-      // Notify breakpoint change
-      onBreakpointChange?.(newBreakpoint, newCols);
-
-      prevBreakpointRef.current = newBreakpoint;
+    prevBreakpointRef.current = currentBreakpoint;
+    prevBreakpointsRef.current = breakpoints;
+    prevColsRef.current = colsConfig;
+    prevLayoutsRef.current = effectiveLayouts;
+    if (!propsLayoutsChanged) {
+      prevPropsLayoutsRef.current = propsLayouts;
     }
   }, [
     width,
+    currentBreakpoint,
+    currentCols,
     breakpoints,
     colsConfig,
-    breakpoint,
-    layouts,
-    compactor,
+    effectiveLayouts,
+    layout,
     onBreakpointChange,
-    onWidthChange
+    onLayoutChange,
+    onWidthChange,
+    propsLayouts,
+    propsLayoutsChanged
   ]);
-
-  // Sync with prop layouts when they change
-  useEffect(() => {
-    if (!deepEqual(propsLayouts, prevPropsLayoutsRef.current)) {
-      setLayouts(propsLayouts);
-      prevPropsLayoutsRef.current = propsLayouts;
-    }
-  }, [propsLayouts, setLayouts]);
-
-  // Notify layout changes
-  useEffect(() => {
-    if (!deepEqual(layouts, prevLayoutsRef.current)) {
-      prevLayoutsRef.current = layouts;
-      onLayoutChange?.(layout, layouts);
-    }
-  }, [layout, layouts, onLayoutChange]);
 
   return {
     layout,
-    layouts,
-    breakpoint,
-    cols,
+    layouts: effectiveLayouts,
+    breakpoint: currentBreakpoint,
+    cols: currentCols,
     setLayoutForBreakpoint,
     setLayouts,
     sortedBreakpoints

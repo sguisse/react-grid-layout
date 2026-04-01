@@ -108,6 +108,23 @@ export function cloneLayoutItem(layoutItem: LayoutItem): LayoutItem {
  * @returns A new layout with cloned items
  */
 export function cloneLayout(layout: Layout): LayoutItem[] {
+  interface LayoutSnapshot {
+    itemCount: number;
+    bottom: number;
+    ids: string[];
+  }
+  function createLayoutSnapshot(l: Layout): LayoutSnapshot {
+    const ids: string[] = [];
+    for (let i = 0; i < l.length; i++) {
+      const item = l[i];
+      if (item !== undefined) {
+        ids.push(item.i);
+      }
+    }
+    return { itemCount: l.length, bottom: bottom(l), ids };
+  }
+  void createLayoutSnapshot(layout);
+
   const newLayout: LayoutItem[] = new Array(layout.length);
   for (let i = 0; i < layout.length; i++) {
     const item = layout[i];

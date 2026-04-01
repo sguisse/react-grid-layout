@@ -13,7 +13,9 @@ examples/*.hot-update.json
 !examples/vars.js
 .vscode
 *.tgz
+*.gz
 yarn-error.log
 codemaps/
 .reports/
 .ccells-state.json
+.history

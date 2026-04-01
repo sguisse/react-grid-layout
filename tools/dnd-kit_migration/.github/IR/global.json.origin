@@ -1,0 +1,65 @@
+{
+  "metadata": {
+    "version": "v7.0-final",
+    "project": "dnd-react-layout-workspace",
+    "lastUpdated": "2026-03-29T13:52:01.769Z",
+    "targetWorkspace": "dnd-react-layout"
+  },
+  "stateMachine": {
+    "states": [
+      "pending",
+      "discovered",
+      "analyzed",
+      "contracted",
+      "planned",
+      "patched",
+      "validated",
+      "done",
+      "blocked"
+    ],
+    "allowedTransitions": {
+      "pending": [
+        "discovered",
+        "blocked"
+      ],
+      "discovered": [
+        "analyzed",
+        "blocked"
+      ],
+      "analyzed": [
+        "contracted",
+        "blocked"
+      ],
+      "contracted": [
+        "planned",
+        "blocked"
+      ],
+      "planned": [
+        "patched",
+        "blocked"
+      ],
+      "patched": [
+        "validated",
+        "planned",
+        "analyzed",
+        "blocked"
+      ],
+      "validated": [
+        "done",
+        "planned",
+        "analyzed",
+        "blocked"
+      ]
+    }
+  },
+  "progress": {
+    "globalPercentage": 0
+  },
+  "registry": {
+    "files": {},
+    "bindings": {},
+    "patches": {}
+  },
+  "dependency_graph": {},
+  "executionTrace": []
+}

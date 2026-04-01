@@ -13,6 +13,7 @@ import { render, act, fireEvent } from "@testing-library/react";
 import ReactGridLayout from "../../src/legacy/ReactGridLayout";
 import ResponsiveReactGridLayout from "../../src/legacy/ResponsiveReactGridLayout";
 import WidthProvider from "../../src/legacy/WidthProvider";
+import { setNativeFallbackOverride } from "../../src/react/dnd/runtime";
 // Import directly from core modules (#2213)
 import { moveElement as _moveElement } from "../../src/core/layout";
 import { getCompactor } from "../../src/core/compactors";
@@ -22,6 +23,14 @@ function compact(layout, compactTypeStr, cols, allowOverlap = false) {
   const compactor = getCompactor(compactTypeStr, allowOverlap);
   return compactor.compact(layout, cols);
 }
+
+beforeAll(() => {
+  setNativeFallbackOverride(true);
+});
+
+afterAll(() => {
+  setNativeFallbackOverride(null);
+});
 
 describe("Backwards Compatibility: Callback Signatures", () => {
   const baseLayout = [

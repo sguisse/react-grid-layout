@@ -6,6 +6,35 @@
 
 import type { Layout, LayoutItem } from "./types.js";
 
+export interface CollisionBounds {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export function getCollisionBounds(
+  item: Pick<LayoutItem, "x" | "y" | "w" | "h">
+): CollisionBounds {
+  return {
+    left: item.x,
+    right: item.x + item.w,
+    top: item.y,
+    bottom: item.y + item.h
+  };
+}
+
+export function collidesBounds(
+  bounds: CollisionBounds,
+  item: Pick<LayoutItem, "x" | "y" | "w" | "h"> & Partial<Pick<LayoutItem, "i">>
+): boolean {
+  if (bounds.right <= item.x) return false;
+  if (bounds.left >= item.x + item.w) return false;
+  if (bounds.bottom <= item.y) return false;
+  if (bounds.top >= item.y + item.h) return false;
+  return true;
+}
+
 /**
  * Check if two layout items collide (overlap).
  *
@@ -20,14 +49,7 @@ export function collides(l1: LayoutItem, l2: LayoutItem): boolean {
   // Same element - can't collide with itself
   if (l1.i === l2.i) return false;
 
-  // Check if bounding boxes don't overlap (any gap means no collision)
-  if (l1.x + l1.w <= l2.x) return false; // l1 is completely left of l2
-  if (l1.x >= l2.x + l2.w) return false; // l1 is completely right of l2
-  if (l1.y + l1.h <= l2.y) return false; // l1 is completely above l2
-  if (l1.y >= l2.y + l2.h) return false; // l1 is completely below l2
-
-  // Bounding boxes overlap
-  return true;
+  return collidesBounds(getCollisionBounds(l1), l2);
 }
 
 /**

@@ -1,0 +1,21 @@
+function collides(l1: LayoutItem, l2: LayoutItem): boolean {
+  // Same element - can't collide with itself
+  if (l1.i === l2.i) return false;
+  return collidesBounds(getCollisionBounds(l1), l2);
+}
+
+function getFirstCollision(layout: Layout, layoutItem: LayoutItem): LayoutItem | undefined {
+  for (let i = 0; i < layout.length; i++) {
+    const item = layout[i];
+    if (item !== undefined && collides(item, layoutItem)) {
+      return item;
+    }
+  }
+  return undefined;
+}
+
+function getAllCollisions(layout: Layout, layoutItem: LayoutItem): LayoutItem[] {
+  return layout.filter((l): l is LayoutItem => collides(l, layoutItem));
+}
+
+

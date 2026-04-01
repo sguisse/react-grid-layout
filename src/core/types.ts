@@ -156,7 +156,7 @@ export interface DroppingPosition {
 // ============================================================================
 
 /**
- * Data provided by react-draggable during drag operations.
+ * Legacy-compatible drag callback data shape used during drag operations.
  */
 export interface ReactDraggableCallbackData {
   node: HTMLElement;
@@ -557,10 +557,14 @@ export interface DropConfig {
 }
 
 /** Default drop configuration */
-export const defaultDropConfig: DropConfig = {
-  enabled: false,
-  defaultItem: { w: 1, h: 1 }
-};
+export const defaultDropConfig: DropConfig = (() => {
+  interface DropPlaceholderSize {
+    w: number;
+    h: number;
+  }
+  const DEFAULT_DROPPING_ITEM_SIZE: DropPlaceholderSize = { w: 1, h: 1 };
+  return { enabled: false, defaultItem: DEFAULT_DROPPING_ITEM_SIZE };
+})();
 
 // ============================================================================
 // Responsive Types

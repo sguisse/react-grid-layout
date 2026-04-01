@@ -1,0 +1,395 @@
+{
+  "allMatch": true,
+  "checks": [
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "l1",
+          "l2"
+        ],
+        "paramCount": 2,
+        "returnType": ": boolean",
+        "bodyHash": "c1d762da976380f2747215508361fc4af57bded8e38f9bf84e7f214e639b2a86",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "l1",
+          "l2"
+        ],
+        "paramCount": 2,
+        "returnType": ": boolean",
+        "bodyHash": "c1d762da976380f2747215508361fc4af57bded8e38f9bf84e7f214e639b2a86",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/collision.ts",
+      "newFile": "dnd-react-layout/src/core/collision.ts",
+      "function": "collides",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "layout",
+          "layoutItem"
+        ],
+        "paramCount": 2,
+        "returnType": ": LayoutItem | undefined",
+        "bodyHash": "eb55d518c8c5b129b87776bfcaa0c57a39a29d54b3fff6122043c30e61d8e6bc",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "layout",
+          "layoutItem"
+        ],
+        "paramCount": 2,
+        "returnType": ": LayoutItem | undefined",
+        "bodyHash": "eb55d518c8c5b129b87776bfcaa0c57a39a29d54b3fff6122043c30e61d8e6bc",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/collision.ts",
+      "newFile": "dnd-react-layout/src/core/collision.ts",
+      "function": "getFirstCollision",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "layout",
+          "layoutItem"
+        ],
+        "paramCount": 2,
+        "returnType": ": LayoutItem[]",
+        "bodyHash": "a7ea754c87908c30ac56abca7287a3599d20a9457a2bb4d8093a09240dd20f76",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "layout",
+          "layoutItem"
+        ],
+        "paramCount": 2,
+        "returnType": ": LayoutItem[]",
+        "bodyHash": "a7ea754c87908c30ac56abca7287a3599d20a9457a2bb4d8093a09240dd20f76",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/collision.ts",
+      "newFile": "dnd-react-layout/src/core/collision.ts",
+      "function": "getAllCollisions",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "positionParams",
+          "x",
+          "y",
+          "w",
+          "h",
+          "dragPosition",
+          "resizePosition"
+        ],
+        "paramCount": 7,
+        "returnType": ": Position",
+        "bodyHash": "27291baf3315c03606176ecf042253818ceec92a6414a98de6d0ac5ee2157802",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "positionParams",
+          "x",
+          "y",
+          "w",
+          "h",
+          "dragPosition",
+          "resizePosition"
+        ],
+        "paramCount": 7,
+        "returnType": ": Position",
+        "bodyHash": "27291baf3315c03606176ecf042253818ceec92a6414a98de6d0ac5ee2157802",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/calculate.ts",
+      "newFile": "dnd-react-layout/src/core/calculate.ts",
+      "function": "calcGridItemPosition",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "positionParams",
+          "top",
+          "left",
+          "w",
+          "h"
+        ],
+        "paramCount": 5,
+        "returnType": ": {\n  x: number;\n  y: number;\n}",
+        "bodyHash": "5ff105c9badafb26a93c3b17b89793d410595eb044efa7e4466b7a38ee990a21",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "positionParams",
+          "top",
+          "left",
+          "w",
+          "h"
+        ],
+        "paramCount": 5,
+        "returnType": ": {\n  x: number;\n  y: number;\n}",
+        "bodyHash": "5ff105c9badafb26a93c3b17b89793d410595eb044efa7e4466b7a38ee990a21",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/calculate.ts",
+      "newFile": "dnd-react-layout/src/core/calculate.ts",
+      "function": "calcXY",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "positionParams",
+          "width",
+          "height",
+          "x",
+          "y",
+          "handle"
+        ],
+        "paramCount": 6,
+        "returnType": ": {\n  w: number;\n  h: number;\n}",
+        "bodyHash": "e4da2e2272ba6b264ccf1fc93beb8c1e0c59719d9329500acff0db32f4b03c30",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "positionParams",
+          "width",
+          "height",
+          "x",
+          "y",
+          "handle"
+        ],
+        "paramCount": 6,
+        "returnType": ": {\n  w: number;\n  h: number;\n}",
+        "bodyHash": "e4da2e2272ba6b264ccf1fc93beb8c1e0c59719d9329500acff0db32f4b03c30",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/calculate.ts",
+      "newFile": "dnd-react-layout/src/core/calculate.ts",
+      "function": "calcWH",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "positionParams"
+        ],
+        "paramCount": 1,
+        "returnType": ": number",
+        "bodyHash": "109883e2776f3c985d545904a86846597165ac3b3e892a14d7279f4afd85b140",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "positionParams"
+        ],
+        "paramCount": 1,
+        "returnType": ": number",
+        "bodyHash": "109883e2776f3c985d545904a86846597165ac3b3e892a14d7279f4afd85b140",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/calculate.ts",
+      "newFile": "dnd-react-layout/src/core/calculate.ts",
+      "function": "calcGridColWidth",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "gridUnits",
+          "colOrRowSize",
+          "marginPx"
+        ],
+        "paramCount": 3,
+        "returnType": ": number",
+        "bodyHash": "0bd3ee5a87f039e0bafcb6aaedfe1ecae23b1ac09a56fcbc974f9200cf7f3adc",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "gridUnits",
+          "colOrRowSize",
+          "marginPx"
+        ],
+        "paramCount": 3,
+        "returnType": ": number",
+        "bodyHash": "0bd3ee5a87f039e0bafcb6aaedfe1ecae23b1ac09a56fcbc974f9200cf7f3adc",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/calculate.ts",
+      "newFile": "dnd-react-layout/src/core/calculate.ts",
+      "function": "calcGridItemWHPx",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "compareWith",
+          "l",
+          "fullLayout",
+          "maxY"
+        ],
+        "paramCount": 4,
+        "returnType": ": LayoutItem",
+        "bodyHash": "9ec1a4d189064fb94825a45f3b634679e0e3f037566f09611e99ee2081080f23",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "compareWith",
+          "l",
+          "fullLayout",
+          "maxY"
+        ],
+        "paramCount": 4,
+        "returnType": ": LayoutItem",
+        "bodyHash": "9ec1a4d189064fb94825a45f3b634679e0e3f037566f09611e99ee2081080f23",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/compactors.ts",
+      "newFile": "dnd-react-layout/src/core/compactors.ts",
+      "function": "compactItemVertical",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "compareWith",
+          "l",
+          "cols",
+          "fullLayout"
+        ],
+        "paramCount": 4,
+        "returnType": ": LayoutItem",
+        "bodyHash": "2b6519ead8a732910163d72a0ab2d608e678cf347796a27ceca3373c0c8ef713",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "compareWith",
+          "l",
+          "cols",
+          "fullLayout"
+        ],
+        "paramCount": 4,
+        "returnType": ": LayoutItem",
+        "bodyHash": "2b6519ead8a732910163d72a0ab2d608e678cf347796a27ceca3373c0c8ef713",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/compactors.ts",
+      "newFile": "dnd-react-layout/src/core/compactors.ts",
+      "function": "compactItemHorizontal",
+      "exitCode": 0
+    },
+    {
+      "match": true,
+      "paramsMatch": true,
+      "returnTypeMatch": true,
+      "bodyChanged": false,
+      "oldSig": {
+        "params": [
+          "layout",
+          "item",
+          "moveToCoord",
+          "axis",
+          "hasStatics"
+        ],
+        "paramCount": 5,
+        "returnType": ": void",
+        "bodyHash": "8d32af74a77c00836314b54d2a28a8bbd2ff73f70db14e43298fa391d80e822d",
+        "async": false,
+        "generator": false
+      },
+      "newSig": {
+        "params": [
+          "layout",
+          "item",
+          "moveToCoord",
+          "axis",
+          "hasStatics"
+        ],
+        "paramCount": 5,
+        "returnType": ": void",
+        "bodyHash": "8d32af74a77c00836314b54d2a28a8bbd2ff73f70db14e43298fa391d80e822d",
+        "async": false,
+        "generator": false
+      },
+      "oldFile": "src/core/compactors.ts",
+      "newFile": "dnd-react-layout/src/core/compactors.ts",
+      "function": "resolveCompactionCollision",
+      "exitCode": 0
+    }
+  ]
+}

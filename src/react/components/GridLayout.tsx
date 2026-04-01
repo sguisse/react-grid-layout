@@ -16,6 +16,13 @@ import React, {
 } from "react";
 import { deepEqual } from "fast-equals";
 import clsx from "clsx";
+import {
+  DragDropProvider,
+  DragOverlay,
+  KeyboardSensor,
+  PointerActivationConstraints,
+  PointerSensor
+} from "../dnd/runtime.js";
 
 import type {
   Layout,
@@ -50,138 +57,52 @@ import {
   correctBounds
 } from "../../core/layout.js";
 import { getAllCollisions } from "../../core/collision.js";
-// Note: compact from compact-compat.js is NOT used - we use compactor.compact() instead (#2213)
 import { getCompactor } from "../../core/compactors.js";
 import {
   calcXY,
+  calcXYRaw,
   calcGridColWidth,
-  calcGridItemWHPx
+  calcGridItemPosition,
+  calcGridItemWHPx,
+  getGridPixelSteps
 } from "../../core/calculate.js";
 import { defaultPositionStrategy } from "../../core/position.js";
-import { defaultConstraints } from "../../core/constraints.js";
+import {
+  applyPositionConstraints,
+  defaultConstraints
+} from "../../core/constraints.js";
 
-import { GridItem, type ResizeHandle } from "./GridItem.js";
-
-// ============================================================================
-// Types
-// ============================================================================
+import {
+  GridItem,
+  type GridItemDragData,
+  type ResizeHandle
+} from "./GridItem.js";
+import { useGridLayout } from "../hooks/useGridLayout.js";
 
 export interface GridLayoutProps {
-  // ===========================================================================
-  // Required Props
-  // ===========================================================================
-
-  /** Child elements to render in the grid */
   children: React.ReactNode;
-
-  /** Width of the container in pixels */
   width: number;
-
-  // ===========================================================================
-  // Composable Configuration Interfaces (v2 API)
-  // ===========================================================================
-
-  /**
-   * Grid measurement configuration.
-   * @see GridConfig
-   */
   gridConfig?: Partial<GridConfig>;
-
-  /**
-   * Drag behavior configuration.
-   * @see DragConfig
-   */
   dragConfig?: Partial<DragConfig>;
-
-  /**
-   * Resize behavior configuration.
-   * @see ResizeConfig
-   */
   resizeConfig?: Partial<ResizeConfig>;
-
-  /**
-   * External drop configuration.
-   * @see DropConfig
-   */
   dropConfig?: Partial<DropConfig>;
-
-  /**
-   * CSS positioning strategy.
-   * Use transformStrategy (default), absoluteStrategy, or createScaledStrategy(scale).
-   * @see PositionStrategy
-   */
   positionStrategy?: PositionStrategy;
-
-  /**
-   * Layout compaction strategy.
-   * Use verticalCompactor (default), horizontalCompactor, or noCompactor.
-   * @see Compactor
-   */
   compactor?: Compactor;
-
-  /**
-   * Layout constraints for position and size limiting.
-   * Applied during drag/resize operations.
-   * Default: [gridBounds, minMaxSize]
-   * @see LayoutConstraint
-   */
   constraints?: LayoutConstraint[];
-
-  // ===========================================================================
-  // Layout Data
-  // ===========================================================================
-
-  /** Layout definition */
   layout?: Layout;
-
-  /** Item to use when dropping from outside */
   droppingItem?: LayoutItem;
-
-  // ===========================================================================
-  // Container Props
-  // ===========================================================================
-
-  /** Whether to auto-size the container height */
   autoSize?: boolean;
-
-  /** Additional class name */
   className?: string;
-
-  /** Additional styles */
   style?: CSSProperties;
-
-  /** Ref to the container element */
   innerRef?: React.Ref<HTMLDivElement>;
-
-  // ===========================================================================
-  // Callbacks
-  // ===========================================================================
-
-  /** Called when layout changes */
   onLayoutChange?: (layout: Layout) => void;
-
-  /** Called when drag starts */
   onDragStart?: EventCallback;
-
-  /** Called during drag */
   onDrag?: EventCallback;
-
-  /** Called when drag stops */
   onDragStop?: EventCallback;
-
-  /** Called when resize starts */
   onResizeStart?: EventCallback;
-
-  /** Called during resize */
   onResize?: EventCallback;
-
-  /** Called when resize stops */
   onResizeStop?: EventCallback;
-
-  /** Called when an item is dropped from outside */
   onDrop?: (layout: Layout, item: LayoutItem | undefined, e: Event) => void;
-
-  /** Called when dragging over the grid */
   onDropDragOver?: (
     e: ReactDragEvent
   ) =>
@@ -190,15 +111,9 @@ export interface GridLayoutProps {
     | void;
 }
 
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
 const noop = () => {};
-
 const layoutClassName = "react-grid-layout";
 
-// Check for Firefox
 let isFirefox = false;
 try {
   isFirefox = /firefox/i.test(navigator.userAgent);
@@ -206,27 +121,25 @@ try {
   /* Ignore */
 }
 
-/**
- * Compare children arrays for equality
- */
 function childrenEqual(a: React.ReactNode, b: React.ReactNode): boolean {
   const aArr = React.Children.toArray(a);
   const bArr = React.Children.toArray(b);
 
-  if (aArr.length !== bArr.length) return false;
+  if (aArr.length !== bArr.length) {
+    return false;
+  }
 
   for (let i = 0; i < aArr.length; i++) {
     const aChild = aArr[i] as ReactElement;
     const bChild = bArr[i] as ReactElement;
-    if (aChild?.key !== bChild?.key) return false;
+    if (aChild?.key !== bChild?.key) {
+      return false;
+    }
   }
 
   return true;
 }
 
-/**
- * Synchronize layout with children
- */
 function synchronizeLayoutWithChildren(
   initialLayout: Layout,
   children: React.ReactNode,
@@ -236,70 +149,128 @@ function synchronizeLayoutWithChildren(
   const layout: LayoutItem[] = [];
   const childKeys = new Set<string>();
 
-  React.Children.forEach(children, child => {
-    if (!React.isValidElement(child) || child.key === null) return;
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child) || child.key === null) {
+      return;
+    }
+
     const key = String(child.key);
     childKeys.add(key);
-
-    // Find existing layout item
-    const existingItem = initialLayout.find(l => l.i === key);
+    const existingItem = initialLayout.find((l) => l.i === key);
 
     if (existingItem) {
       layout.push(cloneLayoutItem(existingItem));
-    } else {
-      // Create new layout item from child data-grid prop
-      const childProps = child.props as { "data-grid"?: Partial<LayoutItem> };
-      const dataGrid = childProps["data-grid"];
-
-      if (dataGrid) {
-        layout.push({
-          i: key,
-          x: dataGrid.x ?? 0,
-          y: dataGrid.y ?? 0,
-          w: dataGrid.w ?? 1,
-          h: dataGrid.h ?? 1,
-          minW: dataGrid.minW,
-          maxW: dataGrid.maxW,
-          minH: dataGrid.minH,
-          maxH: dataGrid.maxH,
-          static: dataGrid.static,
-          isDraggable: dataGrid.isDraggable,
-          isResizable: dataGrid.isResizable,
-          resizeHandles: dataGrid.resizeHandles,
-          isBounded: dataGrid.isBounded
-        });
-      } else {
-        // Create default layout item
-        layout.push({
-          i: key,
-          x: 0,
-          y: bottom(layout),
-          w: 1,
-          h: 1
-        });
-      }
+      return;
     }
+
+    const childProps = child.props as { "data-grid"?: Partial<LayoutItem> };
+    const dataGrid = childProps["data-grid"];
+
+    if (dataGrid) {
+      layout.push({
+        i: key,
+        x: dataGrid.x ?? 0,
+        y: dataGrid.y ?? 0,
+        w: dataGrid.w ?? 1,
+        h: dataGrid.h ?? 1,
+        minW: dataGrid.minW,
+        maxW: dataGrid.maxW,
+        minH: dataGrid.minH,
+        maxH: dataGrid.maxH,
+        static: dataGrid.static,
+        isDraggable: dataGrid.isDraggable,
+        isResizable: dataGrid.isResizable,
+        resizeHandles: dataGrid.resizeHandles,
+        isBounded: dataGrid.isBounded
+      });
+      return;
+    }
+
+    layout.push({
+      i: key,
+      x: 0,
+      y: bottom(layout),
+      w: 1,
+      h: 1
+    });
   });
 
-  // Correct bounds and compact using the compactor's compact method (#2213)
   const corrected = correctBounds(layout, { cols });
   return compactor.compact(corrected, cols);
 }
 
-// ============================================================================
-// Component
-// ============================================================================
+interface GridDropPlaceholderConfig {
+  defaultItem: { w: number; h: number };
+  override?: LayoutItem | null;
+}
 
-/**
- * GridLayout - A reactive, fluid grid layout with draggable, resizable components.
- */
+function createGridDropPlaceholder(config: GridDropPlaceholderConfig): LayoutItem {
+  return (
+    config.override ?? {
+      i: "__dropping-elem__",
+      x: 0,
+      y: 0,
+      ...config.defaultItem
+    }
+  );
+}
+
+function createGridInteractionState(
+  activeDrag: LayoutItem | null,
+  resizing: boolean,
+  droppingPosition: DroppingPosition | undefined
+): {
+  isInteracting: boolean;
+  activeDrag: LayoutItem | null;
+  resizing: boolean;
+  droppingPosition: DroppingPosition | undefined;
+} {
+  return {
+    isInteracting:
+      activeDrag !== null || resizing || droppingPosition !== undefined,
+    activeDrag,
+    resizing,
+    droppingPosition
+  };
+}
+
+interface ActiveDndDragSession {
+  itemId: string;
+  node: HTMLElement | null;
+  /** Pointer coordinates (clientX/Y) captured at drag-start, used to compute
+   * real-time delta in onDragMove. dnd-kit v0.3.2 dispatches the dragmove event
+   * BEFORE it updates operation.transform (the update happens in a queueMicrotask),
+   * so event.operation.transform is always one step behind. Using
+   * (event.to - initialPointer) gives the correct current delta instead. */
+  initialPointer: { x: number; y: number };
+  origin: {
+    left: number;
+    top: number;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+}
+
+function getGridItemDragData(
+  value: unknown
+): GridItemDragData | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const kind = (value as { kind?: unknown }).kind;
+  const itemId = (value as { itemId?: unknown }).itemId;
+  return kind === "drag" && typeof itemId === "string"
+    ? { kind: "drag", itemId }
+    : null;
+}
+
 export function GridLayout(props: GridLayoutProps): ReactElement {
   const {
-    // Required
     children,
     width,
-
-    // Composable config interfaces
     gridConfig: gridConfigProp,
     dragConfig: dragConfigProp,
     resizeConfig: resizeConfigProp,
@@ -307,18 +278,12 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     positionStrategy = defaultPositionStrategy,
     compactor: compactorProp,
     constraints = defaultConstraints,
-
-    // Layout data
     layout: propsLayout = [],
     droppingItem: droppingItemProp,
-
-    // Container props
     autoSize = true,
     className = "",
     style = {},
     innerRef,
-
-    // Callbacks
     onLayoutChange = noop,
     onDragStart: onDragStartProp = noop,
     onDrag: onDragProp = noop,
@@ -330,7 +295,6 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     onDropDragOver: onDropDragOverProp = noop
   } = props;
 
-  // Resolve config interfaces with defaults
   const gridConfig: GridConfig = useMemo(
     () => ({ ...defaultGridConfig, ...gridConfigProp }),
     [gridConfigProp]
@@ -348,7 +312,6 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     [dropConfigProp]
   );
 
-  // Destructure resolved configs for convenience
   const { cols, rowHeight, maxRows, margin, containerPadding } = gridConfig;
   const {
     enabled: isDraggable,
@@ -368,43 +331,134 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     onDragOver: dropConfigOnDragOver
   } = dropConfig;
 
-  // Get compactor (use provided or get from type)
   const compactor = compactorProp ?? getCompactor("vertical");
   const compactType = compactor.type;
   const allowOverlap = compactor.allowOverlap;
   const preventCollision = compactor.preventCollision ?? false;
 
-  // Resolve dropping item - memoized to avoid unstable reference in useCallback dependencies
   const droppingItem = useMemo(
     () =>
-      droppingItemProp ?? {
-        i: "__dropping-elem__",
-        ...defaultDropItem
-      },
+      createGridDropPlaceholder({
+        defaultItem: defaultDropItem,
+        override: droppingItemProp
+      }),
     [droppingItemProp, defaultDropItem]
   );
 
-  // Position strategy values
   const useCSSTransforms = positionStrategy.type === "transform";
   const transformScale = positionStrategy.scale;
-
   const effectiveContainerPadding = containerPadding ?? margin;
-
-  // State
-  const [mounted, setMounted] = useState(false);
-  const [layout, setLayout] = useState<Layout>(() =>
-    synchronizeLayoutWithChildren(propsLayout, children, cols, compactor)
+  const positionParams: PositionParams = useMemo(
+    () => ({
+      cols,
+      margin: margin as [number, number],
+      maxRows,
+      rowHeight,
+      containerWidth: width,
+      containerPadding: effectiveContainerPadding as [number, number]
+    }),
+    [cols, margin, maxRows, rowHeight, width, effectiveContainerPadding]
   );
-  const [activeDrag, setActiveDrag] = useState<LayoutItem | null>(null);
-  const [resizing, setResizing] = useState(false);
+  const { stepX, stepY } = useMemo(
+    () => getGridPixelSteps(positionParams),
+    [positionParams]
+  );
+  const synchronizedLayout = useMemo(
+    () => synchronizeLayoutWithChildren(propsLayout, children, cols, compactor),
+    [propsLayout, children, cols, compactor]
+  );
+
+  const [mounted, setMounted] = useState(false);
   const [droppingDOMNode, setDroppingDOMNode] = useState<ReactElement | null>(
     null
   );
-  const [droppingPosition, setDroppingPosition] = useState<
-    DroppingPosition | undefined
-  >();
+  const [dragOverlayId, setDragOverlayId] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const activeDndDragRef = useRef<ActiveDndDragSession | null>(null);
+  const setContainerNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      containerRef.current = node;
 
-  // Refs for tracking previous state
+      if (typeof innerRef === "function") {
+        innerRef(node);
+        return;
+      }
+
+      if (innerRef && "current" in innerRef) {
+        (innerRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      }
+    },
+    [innerRef]
+  );
+  const dndSensors = useMemo(
+    () => [
+      PointerSensor.configure({
+        activationConstraints: [
+          new PointerActivationConstraints.Distance({
+            value: Math.max(3, dragThreshold)
+          })
+        ],
+        preventActivation: (event: PointerEvent, source: unknown) => {
+          // Resize handle draggables must always be allowed to activate —
+          // they ARE on .react-resizable-handle elements by design.
+          const sourceData = (source as { data?: { kind?: unknown } } | null)
+            ?.data;
+          if (sourceData?.kind === "resize") return false;
+
+          const target =
+            event.target instanceof HTMLElement ? event.target : null;
+          return Boolean(
+            target &&
+              target.closest(
+                [".react-resizable-handle", draggableCancel]
+                  .filter(Boolean)
+                  .join(",")
+              )
+          );
+        }
+      }),
+      KeyboardSensor.configure({
+        offset: {
+          x: stepX,
+          y: stepY
+        }
+      })
+    ],
+    [dragThreshold, draggableCancel, stepX, stepY]
+  );
+
+  const {
+    layout,
+    setLayout,
+    dragState,
+    resizeState,
+    dropState,
+    onDragStart: beginDragState,
+    onDrag: updateDragState,
+    onDragStop: stopDragState,
+    cancelDrag: cancelDragState,
+    onResizeStart: beginResizeState,
+    onResize: updateResizeState,
+    onResizeStop: stopResizeState,
+    cancelResize: cancelResizeState,
+    onDropDragOver: updateDropPlaceholder,
+    onDropDragLeave: clearDropPlaceholder
+  } = useGridLayout({
+    layout: synchronizedLayout,
+    cols,
+    preventCollision,
+    compactor,
+    droppingItemId: droppingItem.i
+  });
+
+  const activeDrag = dragState.activeDrag;
+  const resizing = resizeState.resizing;
+  const droppingPosition = dropState.droppingPosition ?? undefined;
+  const interactionState = useMemo(
+    () => createGridInteractionState(activeDrag, resizing, droppingPosition),
+    [activeDrag, resizing, droppingPosition]
+  );
+
   const oldDragItemRef = useRef<LayoutItem | null>(null);
   const oldResizeItemRef = useRef<LayoutItem | null>(null);
   const oldLayoutRef = useRef<Layout | null>(null);
@@ -413,47 +467,103 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
   const prevPropsLayoutRef = useRef<Layout>(propsLayout);
   const prevChildrenRef = useRef<React.ReactNode>(children);
   const prevCompactTypeRef = useRef<CompactType>(compactType);
-
-  // Ref to current layout - Critical for preventing infinite update loops (#2204).
-  // This allows callbacks to access the latest layout without including `layout`
-  // in dependency arrays, which would cause callbacks to be recreated on every
-  // layout change and trigger infinite re-renders via GridItem's useEffect.
   const layoutRef = useRef<Layout>(layout);
   layoutRef.current = layout;
+  const childMap = useMemo(() => {
+    const next = new Map<string, ReactElement>();
+    React.Children.forEach(children, (child) => {
+      if (!React.isValidElement(child) || child.key === null) {
+        return;
+      }
 
-  // Mount effect - call onLayoutChange with initial layout if it differs from props
+      next.set(String(child.key), child);
+    });
+    return next;
+  }, [children]);
+  const createConstraintContext = useCallback(
+    (currentLayout: Layout) => ({
+      cols,
+      maxRows,
+      containerWidth: width,
+      containerHeight: containerRef.current?.clientHeight ?? 0,
+      rowHeight,
+      margin,
+      layout: currentLayout
+    }),
+    [cols, maxRows, width, rowHeight, margin]
+  );
+  const getDragEventNativeEvent = useCallback(
+    (event: { nativeEvent?: Event; operation: { activatorEvent: Event | null } }) =>
+      event.nativeEvent ?? event.operation.activatorEvent ?? new Event("drag"),
+    []
+  );
+  const getDragSourceElement = useCallback(
+    (source: unknown): HTMLElement | null => {
+      const element = (source as { element?: Element | undefined } | null)?.element;
+      return element instanceof HTMLElement ? element : null;
+    },
+    []
+  );
+  const getDraggedGridPosition = useCallback(
+    (
+      session: ActiveDndDragSession,
+      currentItem: LayoutItem,
+      transform: { x: number; y: number }
+    ) => {
+      const newPosition = {
+        left: session.origin.left + transform.x / transformScale,
+        top: session.origin.top + transform.y / transformScale
+      };
+      const rawPosition = calcXYRaw(
+        positionParams,
+        newPosition.top,
+        newPosition.left
+      );
+      const constrained = applyPositionConstraints(
+        constraints,
+        currentItem,
+        rawPosition.x,
+        rawPosition.y,
+        createConstraintContext(layoutRef.current)
+      );
+
+      return {
+        x: constrained.x,
+        y: constrained.y,
+        newPosition
+      };
+    },
+    [constraints, createConstraintContext, positionParams, transformScale]
+  );
+
   useEffect(() => {
     setMounted(true);
-    // Possibly call back with layout on mount. This should be done after correcting the layout width
-    // to ensure we don't rerender with the wrong width.
     if (!deepEqual(layout, propsLayout)) {
       onLayoutChange(layout);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run on mount
+  }, []);
 
-  // Sync layout from props
   useEffect(() => {
-    if (activeDrag) return; // Don't update during drag
-    if (droppingDOMNode) return; // Don't update during drop from outside
+    if (activeDrag || droppingDOMNode) {
+      return;
+    }
 
     const layoutChanged = !deepEqual(propsLayout, prevPropsLayoutRef.current);
     const childrenChanged = !childrenEqual(children, prevChildrenRef.current);
     const compactTypeChanged = compactType !== prevCompactTypeRef.current;
 
     if (layoutChanged || childrenChanged || compactTypeChanged) {
-      const baseLayout = layoutChanged ? propsLayout : layout;
-      const newLayout = synchronizeLayoutWithChildren(
+      // Use the ref for current layout so 'layout' state itself is not a dep
+      // (avoids re-running this effect on every drag-move layout update).
+      const baseLayout = layoutChanged ? propsLayout : layoutRef.current;
+      const nextLayout = synchronizeLayoutWithChildren(
         baseLayout,
         children,
         cols,
         compactor
       );
-      // Only update if the layout actually changed (#2210)
-      // This prevents infinite loops when controlled state updates trigger
-      // sync effects that produce the same layout
-      if (!deepEqual(newLayout, layout)) {
-        setLayout(newLayout);
+      if (!deepEqual(nextLayout, layoutRef.current)) {
+        setLayout(nextLayout);
       }
     }
 
@@ -467,82 +577,71 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     compactType,
     compactor,
     activeDrag,
-    droppingDOMNode,
-    layout
+    droppingDOMNode
+    // 'layout' intentionally omitted: we access it via layoutRef.current to avoid
+    // re-running on every drag-move. 'setLayout' omitted because it only changes
+    // when cols/compactor change, which are already in the deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   ]);
 
-  // Layout change callback
   useEffect(() => {
     if (!activeDrag && !deepEqual(layout, prevLayoutRef.current)) {
       prevLayoutRef.current = layout;
-      // Filter out dropping placeholder - it's transient internal state only (#2210)
-      // The dropping item should not be exposed to users until the actual drop happens.
-      // This prevents infinite loops in controlled state patterns where children derive
-      // from layout (e.g., children = layouts.map(...) with onLayoutChange={setLayouts}).
-      const publicLayout = layout.filter(l => l.i !== droppingItem.i);
+      const publicLayout = layout.filter((l) => l.i !== droppingItem.i);
       onLayoutChange(publicLayout);
     }
   }, [layout, activeDrag, onLayoutChange, droppingItem.i]);
 
-  // ============================================================================
-  // Container Height
-  // ============================================================================
-
   const containerHeight = useMemo((): string | undefined => {
-    if (!autoSize) return undefined;
+    if (!autoSize) {
+      return undefined;
+    }
+
     const nbRow = bottom(layout);
     const containerPaddingY = effectiveContainerPadding[1];
     return (
-      nbRow * rowHeight + (nbRow - 1) * margin[1] + containerPaddingY * 2 + "px"
+      nbRow * rowHeight +
+      (nbRow - 1) * margin[1] +
+      containerPaddingY * 2 +
+      "px"
     );
   }, [autoSize, layout, rowHeight, margin, effectiveContainerPadding]);
 
-  // ============================================================================
-  // Drag Handlers
-  // ============================================================================
-
   const onDragStart = useCallback(
-    (i: string, _x: number, _y: number, data: GridDragEvent) => {
+    (i: string, x: number, y: number, data: GridDragEvent) => {
       const currentLayout = layoutRef.current;
-      const l = getLayoutItem(currentLayout, i);
-      if (!l) return;
+      const item = getLayoutItem(currentLayout, i);
+      if (!item) {
+        return;
+      }
 
-      const placeholder: LayoutItem = {
-        w: l.w,
-        h: l.h,
-        x: l.x,
-        y: l.y,
-        i
-      };
-
-      oldDragItemRef.current = cloneLayoutItem(l);
+      oldDragItemRef.current = cloneLayoutItem(item);
       oldLayoutRef.current = currentLayout;
-      setActiveDrag(placeholder);
-
-      onDragStartProp(currentLayout, l, l, null, data.e, data.node);
+      beginDragState(i, x, y);
+      onDragStartProp(currentLayout, item, item, null, data.e, data.node);
     },
-    [onDragStartProp]
+    [beginDragState, onDragStartProp]
   );
 
   const onDrag = useCallback(
     (i: string, x: number, y: number, data: GridDragEvent) => {
       const currentLayout = layoutRef.current;
       const oldDragItem = oldDragItemRef.current;
-      const l = getLayoutItem(currentLayout, i);
-      if (!l) return;
+      const item = getLayoutItem(currentLayout, i);
+      if (!item) {
+        return;
+      }
 
       const placeholder: LayoutItem = {
-        w: l.w,
-        h: l.h,
-        x: l.x,
-        y: l.y,
+        w: item.w,
+        h: item.h,
+        x: item.x,
+        y: item.y,
         i
       };
-
-      // Move the element
       const newLayout = moveElement(
         currentLayout,
-        l,
+        item,
         x,
         y,
         true,
@@ -552,27 +651,31 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         allowOverlap
       );
 
-      onDragProp(newLayout, oldDragItem, l, placeholder, data.e, data.node);
-
-      // Use compactor.compact() - it handles allowOverlap internally (#2213)
-      setLayout(compactor.compact(newLayout, cols));
-      setActiveDrag(placeholder);
+      onDragProp(newLayout, oldDragItem, item, placeholder, data.e, data.node);
+      updateDragState(i, x, y);
     },
-    [preventCollision, compactType, cols, allowOverlap, compactor, onDragProp]
+    [
+      preventCollision,
+      compactType,
+      cols,
+      allowOverlap,
+      onDragProp,
+      updateDragState
+    ]
   );
 
   const onDragStop = useCallback(
     (i: string, x: number, y: number, data: GridDragEvent) => {
-      if (!activeDrag) return;
-
       const currentLayout = layoutRef.current;
       const oldDragItem = oldDragItemRef.current;
-      const l = getLayoutItem(currentLayout, i);
-      if (!l) return;
+      const item = getLayoutItem(currentLayout, i);
+      if (!item) {
+        return;
+      }
 
       const newLayout = moveElement(
         currentLayout,
-        l,
+        item,
         x,
         y,
         true,
@@ -581,51 +684,264 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         cols,
         allowOverlap
       );
-
-      // Use compactor.compact() - it handles allowOverlap internally (#2213)
       const finalLayout = compactor.compact(newLayout, cols);
 
-      onDragStopProp(finalLayout, oldDragItem, l, null, data.e, data.node);
+      onDragStopProp(finalLayout, oldDragItem, item, null, data.e, data.node);
 
-      const oldLayout = oldLayoutRef.current;
       oldDragItemRef.current = null;
       oldLayoutRef.current = null;
-      setActiveDrag(null);
-      setLayout(finalLayout);
-
-      if (oldLayout && !deepEqual(oldLayout, finalLayout)) {
-        onLayoutChange(finalLayout);
-      }
+      stopDragState(i, x, y);
+      // NOTE: do NOT call onLayoutChange here directly. The third useEffect
+      // (watching `layout`) handles it once the layout state settles. A direct
+      // call here would double-fire onLayoutChange, causing extra parent renders
+      // which keep dnd-kit's renderer.rendering promise pending and prevent
+      // dragOperation.reset() from running — leaving the manager non-idle so
+      // the next drag attempt is silently blocked.
     },
     [
-      activeDrag,
       preventCollision,
       compactType,
       cols,
       allowOverlap,
       compactor,
       onDragStopProp,
-      onLayoutChange
+      stopDragState
     ]
   );
 
-  // ============================================================================
-  // Resize Handlers
-  // ============================================================================
+  const handleDndKitDragStart = useCallback(
+    (
+      event: {
+        operation: {
+          source: { data?: unknown } | null;
+          activatorEvent: Event | null;
+        };
+        nativeEvent?: Event;
+      }
+    ) => {
+      console.debug("[GridLayout] handleDndKitDragStart", {
+        sourceData: event.operation.source?.data,
+        activatorEvent: event.operation.activatorEvent,
+        nativeEvent: event.nativeEvent
+      });
+      const dragData = getGridItemDragData(event.operation.source?.data);
+      if (!dragData) {
+        console.debug("[GridLayout] handleDndKitDragStart: no dragData");
+        return;
+      }
+
+      const currentLayout = layoutRef.current;
+      const item = getLayoutItem(currentLayout, dragData.itemId);
+      if (!item) {
+        console.debug("[GridLayout] handleDndKitDragStart: item not found", dragData);
+        return;
+      }
+
+      const originPosition = calcGridItemPosition(
+        positionParams,
+        item.x,
+        item.y,
+        item.w,
+        item.h
+      );
+      const node = getDragSourceElement(event.operation.source);
+      // Capture the pointer position at drag start so we can compute a real-time
+      // delta in handleDndKitDragMove without depending on the stale
+      // operation.transform (which is updated asynchronously in dnd-kit v0.3.2).
+      const activatorEvent = event.operation.activatorEvent as (MouseEvent | null);
+      const initialPointer = activatorEvent
+        ? { x: activatorEvent.clientX ?? 0, y: activatorEvent.clientY ?? 0 }
+        : { x: 0, y: 0 };
+      activeDndDragRef.current = {
+        itemId: item.i,
+        node,
+        initialPointer,
+        origin: {
+          left: originPosition.left,
+          top: originPosition.top,
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h
+        }
+      };
+      console.debug("[GridLayout] activeDndDragRef set", activeDndDragRef.current);
+      setDragOverlayId(item.i);
+
+      console.debug("[GridLayout] invoking onDragStart callback", item.i, item.x, item.y);
+      onDragStart(item.i, item.x, item.y, {
+        e: getDragEventNativeEvent(event),
+        node: node ?? containerRef.current ?? document.body,
+        newPosition: {
+          left: originPosition.left,
+          top: originPosition.top
+        }
+      });
+    },
+    [getDragEventNativeEvent, getDragSourceElement, onDragStart, positionParams]
+  );
+
+  const handleDndKitDragMove = useCallback(
+    (
+      event: {
+        operation: {
+          source: { data?: unknown } | null;
+          transform: { x: number; y: number };
+          activatorEvent: Event | null;
+        };
+        /** Absolute pointer coordinates from the sensor (real-time, not delayed). */
+        to?: { x: number; y: number };
+        by?: { x: number; y: number };
+        nativeEvent?: Event;
+      }
+    ) => {
+      console.debug("[GridLayout] handleDndKitDragMove", {
+        transform: event.operation.transform,
+        to: event.to,
+        sourceData: event.operation.source?.data
+      });
+      const session = activeDndDragRef.current;
+      const dragData = getGridItemDragData(event.operation.source?.data);
+      if (!session || !dragData || session.itemId !== dragData.itemId) {
+        console.debug("[GridLayout] handleDndKitDragMove: session mismatch", { session, dragData });
+        return;
+      }
+
+      const currentLayout = layoutRef.current;
+      const item = getLayoutItem(currentLayout, session.itemId);
+      if (!item) {
+        console.debug("[GridLayout] handleDndKitDragMove: item not found", session.itemId);
+        return;
+      }
+
+      // In dnd-kit v0.3.2, monitor.dispatch("dragmove") fires synchronously but
+      // position.current is updated in a queueMicrotask AFTER the event. This means
+      // event.operation.transform is stale (always 0 on the first move, one step
+      // behind on subsequent moves). Use event.to (real-time pointer coords from
+      // the sensor) with the stored initialPointer to get the true delta.
+      const transform = event.to
+        ? {
+            x: event.to.x - session.initialPointer.x,
+            y: event.to.y - session.initialPointer.y
+          }
+        : event.operation.transform;
+
+      const { x, y, newPosition } = getDraggedGridPosition(
+        session,
+        item,
+        transform
+      );
+      const node = getDragSourceElement(event.operation.source) ?? session.node;
+
+      console.debug("[GridLayout] invoking onDrag", session.itemId, { x, y, newPosition });
+      onDrag(session.itemId, x, y, {
+        e: getDragEventNativeEvent(event),
+        node: node ?? containerRef.current ?? document.body,
+        newPosition
+      });
+    },
+    [getDragEventNativeEvent, getDragSourceElement, getDraggedGridPosition, onDrag]
+  );
+
+  const handleDndKitDragEnd = useCallback(
+    (
+      event: {
+        canceled: boolean;
+        operation: {
+          source: { data?: unknown } | null;
+          transform: { x: number; y: number };
+          activatorEvent: Event | null;
+        };
+        /** Absolute pointer coordinates from the sensor (real-time, not delayed). */
+        to?: { x: number; y: number };
+        by?: { x: number; y: number };
+        nativeEvent?: Event;
+      }
+    ) => {
+      console.debug("[GridLayout] handleDndKitDragEnd", {
+        canceled: event.canceled,
+        transform: event.operation.transform,
+        sourceData: event.operation.source?.data
+      });
+      const session = activeDndDragRef.current;
+      const dragData = getGridItemDragData(event.operation.source?.data);
+      activeDndDragRef.current = null;
+      setDragOverlayId(null);
+
+      if (!session || !dragData || session.itemId !== dragData.itemId) {
+        console.debug("[GridLayout] handleDndKitDragEnd: session or dragData mismatch", { session, dragData });
+        return;
+      }
+
+      if (event.canceled) {
+        console.debug("[GridLayout] drag canceled for", session.itemId);
+        oldDragItemRef.current = null;
+        oldLayoutRef.current = null;
+        cancelDragState();
+        return;
+      }
+
+      const currentLayout = layoutRef.current;
+      const item = getLayoutItem(currentLayout, session.itemId);
+      if (!item) {
+        console.debug("[GridLayout] handleDndKitDragEnd: item not found", session.itemId);
+        cancelDragState();
+        return;
+      }
+
+      // At dragend time, operation.transform is unreliable because:
+      // 1. The dragend event has no `event.to` field (only dragmove does)
+      // 2. scheduler.schedule uses requestAnimationFrame, so if pointerup fires
+      //    in the same rAF cycle as the last pointermove, handleMove hasn't run
+      //    yet → position.current was never updated with the final pointer position
+      // Fix: use the nativeEvent (the raw PointerEvent for pointerup) which always
+      //    carries the exact final clientX/Y, consistent with initialPointer.
+      const nativePointerEnd =
+        event.nativeEvent instanceof PointerEvent ? event.nativeEvent : null;
+      const endTransform = nativePointerEnd
+        ? {
+            x: nativePointerEnd.clientX - session.initialPointer.x,
+            y: nativePointerEnd.clientY - session.initialPointer.y
+          }
+        : event.operation.transform;
+
+      const { x, y, newPosition } = getDraggedGridPosition(
+        session,
+        item,
+        endTransform
+      );
+      const node = getDragSourceElement(event.operation.source) ?? session.node;
+
+      console.debug("[GridLayout] invoking onDragStop", session.itemId, { x, y, newPosition });
+      onDragStop(session.itemId, x, y, {
+        e: getDragEventNativeEvent(event),
+        node: node ?? containerRef.current ?? document.body,
+        newPosition
+      });
+    },
+    [
+      cancelDragState,
+      getDragEventNativeEvent,
+      getDragSourceElement,
+      getDraggedGridPosition,
+      onDragStop
+    ]
+  );
 
   const onResizeStart = useCallback(
     (i: string, _w: number, _h: number, data: GridResizeEvent) => {
       const currentLayout = layoutRef.current;
-      const l = getLayoutItem(currentLayout, i);
-      if (!l) return;
+      const item = getLayoutItem(currentLayout, i);
+      if (!item) {
+        return;
+      }
 
-      oldResizeItemRef.current = cloneLayoutItem(l);
+      oldResizeItemRef.current = cloneLayoutItem(item);
       oldLayoutRef.current = currentLayout;
-      setResizing(true);
-
-      onResizeStartProp(currentLayout, l, l, null, data.e, data.node);
+      beginResizeState(i);
+      onResizeStartProp(currentLayout, item, item, null, data.e, data.node);
     },
-    [onResizeStartProp]
+    [beginResizeState, onResizeStartProp]
   );
 
   const onResize = useCallback(
@@ -638,59 +954,58 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       let newX: number | undefined;
       let newY: number | undefined;
 
-      const [newLayout, l] = withLayoutItem(currentLayout, i, item => {
-        newX = item.x;
-        newY = item.y;
+      const [newLayout, item] = withLayoutItem(currentLayout, i, (layoutItem) => {
+        newX = layoutItem.x;
+        newY = layoutItem.y;
 
-        // Handle corner/edge resizing that affects position
         if (["sw", "w", "nw", "n", "ne"].includes(handle)) {
           if (["sw", "nw", "w"].includes(handle)) {
-            newX = item.x + (item.w - w);
-            w = item.x !== newX && newX < 0 ? item.w : w;
+            newX = layoutItem.x + (layoutItem.w - w);
+            w = layoutItem.x !== newX && newX < 0 ? layoutItem.w : w;
             newX = newX < 0 ? 0 : newX;
           }
 
           if (["ne", "n", "nw"].includes(handle)) {
-            newY = item.y + (item.h - h);
-            h = item.y !== newY && newY < 0 ? item.h : h;
+            newY = layoutItem.y + (layoutItem.h - h);
+            h = layoutItem.y !== newY && newY < 0 ? layoutItem.h : h;
             newY = newY < 0 ? 0 : newY;
           }
 
           shouldMoveItem = true;
         }
 
-        // Check for collisions if preventCollision is enabled
         if (preventCollision && !allowOverlap) {
           const collisions = getAllCollisions(currentLayout, {
-            ...item,
+            ...layoutItem,
             w,
             h,
-            x: newX ?? item.x,
-            y: newY ?? item.y
-          }).filter(layoutItem => layoutItem.i !== item.i);
+            x: newX ?? layoutItem.x,
+            y: newY ?? layoutItem.y
+          }).filter((layoutEntry) => layoutEntry.i !== layoutItem.i);
 
           if (collisions.length > 0) {
-            newY = item.y;
-            h = item.h;
-            newX = item.x;
-            w = item.w;
+            newY = layoutItem.y;
+            h = layoutItem.h;
+            newX = layoutItem.x;
+            w = layoutItem.w;
             shouldMoveItem = false;
           }
         }
 
-        (item as Mutable<LayoutItem>).w = w;
-        (item as Mutable<LayoutItem>).h = h;
-
-        return item;
+        (layoutItem as Mutable<LayoutItem>).w = w;
+        (layoutItem as Mutable<LayoutItem>).h = h;
+        return layoutItem;
       });
 
-      if (!l) return;
+      if (!item) {
+        return;
+      }
 
       let finalLayout = newLayout;
       if (shouldMoveItem && newX !== undefined && newY !== undefined) {
         finalLayout = moveElement(
           newLayout,
-          l,
+          item,
           newX,
           newY,
           true,
@@ -702,10 +1017,10 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       }
 
       const placeholder: LayoutItem = {
-        w: l.w,
-        h: l.h,
-        x: l.x,
-        y: l.y,
+        w: item.w,
+        h: item.h,
+        x: item.x,
+        y: item.y,
         i,
         static: true
       };
@@ -713,97 +1028,78 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       onResizeProp(
         finalLayout,
         oldResizeItem,
-        l,
+        item,
         placeholder,
         data.e,
         data.node
       );
-
-      // Use compactor.compact() - it handles allowOverlap internally (#2213)
-      setLayout(compactor.compact(finalLayout, cols));
-      setActiveDrag(placeholder);
+      updateResizeState(i, w, h, newX, newY);
     },
-    [preventCollision, compactType, cols, allowOverlap, compactor, onResizeProp]
+    [
+      preventCollision,
+      allowOverlap,
+      compactType,
+      cols,
+      onResizeProp,
+      updateResizeState
+    ]
   );
 
   const onResizeStop = useCallback(
-    (i: string, _w: number, _h: number, data: GridResizeEvent) => {
+    (i: string, w: number, h: number, data: GridResizeEvent) => {
       const currentLayout = layoutRef.current;
       const oldResizeItem = oldResizeItemRef.current;
-      const l = getLayoutItem(currentLayout, i);
-
-      // Use compactor.compact() - it handles allowOverlap internally (#2213)
+      const item = getLayoutItem(currentLayout, i);
       const finalLayout = compactor.compact(currentLayout, cols);
 
       onResizeStopProp(
         finalLayout,
         oldResizeItem,
-        l ?? null,
+        item ?? null,
         null,
         data.e,
         data.node
       );
 
-      const oldLayout = oldLayoutRef.current;
       oldResizeItemRef.current = null;
       oldLayoutRef.current = null;
-      setActiveDrag(null);
-      setResizing(false);
-      setLayout(finalLayout);
-
-      if (oldLayout && !deepEqual(oldLayout, finalLayout)) {
-        onLayoutChange(finalLayout);
-      }
+      stopResizeState(
+        i,
+        item?.w ?? w,
+        item?.h ?? h,
+        item?.x,
+        item?.y
+      );
+      // NOTE: do NOT call onLayoutChange here directly (same reason as onDragStop).
     },
-    [cols, compactor, onResizeStopProp, onLayoutChange]
+    [cols, compactor, onResizeStopProp, stopResizeState]
+  );
+  const onResizeCancel = useCallback(
+    (_i: string) => {
+      oldResizeItemRef.current = null;
+      oldLayoutRef.current = null;
+      cancelResizeState();
+    },
+    [cancelResizeState]
   );
 
-  // ============================================================================
-  // Drop Handlers
-  // ============================================================================
-
   const removeDroppingPlaceholder = useCallback(() => {
-    // Guard against being called when there's no dropping item (#2210)
-    // This makes the function idempotent and safe to call multiple times
-    const currentLayout = layoutRef.current;
-    const hasDroppingItem = currentLayout.some(l => l.i === droppingItem.i);
-    if (!hasDroppingItem) {
-      // Nothing to remove, just ensure state is clean
-      setDroppingDOMNode(null);
-      setActiveDrag(null);
-      setDroppingPosition(undefined);
-      return;
-    }
-
-    // Use compactor.compact() - it handles allowOverlap internally (#2213)
-    const newLayout = compactor.compact(
-      currentLayout.filter(l => l.i !== droppingItem.i),
-      cols
-    );
-
-    setLayout(newLayout);
+    clearDropPlaceholder();
     setDroppingDOMNode(null);
-    setActiveDrag(null);
-    setDroppingPosition(undefined);
-  }, [droppingItem.i, cols, compactor]);
+  }, [clearDropPlaceholder]);
 
   const handleDragOver = useCallback(
     (e: ReactDragEvent): void | false => {
       e.preventDefault();
       e.stopPropagation();
 
-      // Firefox hack
       if (
         isFirefox &&
-        !(e.nativeEvent.target as HTMLElement)?.classList.contains(
-          layoutClassName
-        )
+        !(e.nativeEvent.target as HTMLElement)?.classList.contains(layoutClassName)
       ) {
         return false;
       }
 
-      // Use dropConfig.onDragOver if provided, otherwise fall back to onDropDragOver prop (#2212)
-      // dropConfig.onDragOver uses native DragEvent, onDropDragOver uses React's DragEvent
       const rawResult = dropConfigOnDragOver
         ? dropConfigOnDragOver(e.nativeEvent as DragEvent)
         : onDropDragOverProp(e);
@@ -813,16 +1109,21 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         }
         return false;
       }
+
+      const safeDragOverResult = (rawResult ?? {}) as {
+        w?: number;
+        h?: number;
+        dragOffsetX?: number;
+        dragOffsetY?: number;
+      };
       const {
         dragOffsetX = 0,
         dragOffsetY = 0,
         ...onDragOverResult
-      } = rawResult ?? {};
+      } = safeDragOverResult;
 
       const finalDroppingItem = { ...droppingItem, ...onDragOverResult };
       const gridRect = e.currentTarget.getBoundingClientRect();
-
-      // Calculate position params for proper column width calculation
       const positionParams: PositionParams = {
         cols,
         margin: margin as [number, number],
@@ -832,35 +1133,25 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         containerPadding: effectiveContainerPadding as [number, number]
       };
 
-      // Calculate actual column width accounting for margins and padding
       const actualColWidth = calcGridColWidth(positionParams);
-
-      // Calculate item dimensions in pixels including margins between cells
       const itemPixelWidth = calcGridItemWHPx(
         finalDroppingItem.w,
         actualColWidth,
-        (margin as [number, number])[0]
+        margin[0]
       );
       const itemPixelHeight = calcGridItemWHPx(
         finalDroppingItem.h,
         rowHeight,
-        (margin as [number, number])[1]
+        margin[1]
       );
-
-      // Center the dropping item by offsetting by half its size
       const itemCenterOffsetX = itemPixelWidth / 2;
       const itemCenterOffsetY = itemPixelHeight / 2;
-
-      // Calculate mouse position relative to grid, accounting for drag offset and item centering
       const rawGridX =
         e.clientX - gridRect.left + dragOffsetX - itemCenterOffsetX;
       const rawGridY =
         e.clientY - gridRect.top + dragOffsetY - itemCenterOffsetY;
-
-      // Clamp to prevent negative positions (calcXY handles upper bound clamping)
       const clampedGridX = Math.max(0, rawGridX);
       const clampedGridY = Math.max(0, rawGridY);
-
       const newDroppingPosition: DroppingPosition = {
         left: clampedGridX / transformScale,
         top: clampedGridY / transformScale,
@@ -877,49 +1168,42 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         );
 
         setDroppingDOMNode(<div key={finalDroppingItem.i} />);
-        setDroppingPosition(newDroppingPosition);
-        // Filter out any stale __dropping-elem__ before adding the new one.
-        // This prevents duplicate IDs caused by a race condition where
-        // handleDragLeave's removeDroppingPlaceholder() checks layoutRef
-        // before a batched setLayout from a previous handleDragOver has
-        // rendered, leaving __dropping-elem__ in the layout while
-        // droppingDOMNode is null.
-        const baseLayout = layoutRef.current.filter(
-          l => l.i !== finalDroppingItem.i
-        );
-        setLayout([
-          ...baseLayout,
+        updateDropPlaceholder(
           {
             ...finalDroppingItem,
             x: calculatedPosition.x,
             y: calculatedPosition.y,
             static: false,
             isDraggable: true
-          }
-        ]);
-      } else if (droppingPosition) {
-        const shouldUpdate =
-          droppingPosition.left !== newDroppingPosition.left ||
-          droppingPosition.top !== newDroppingPosition.top;
-        if (shouldUpdate) {
-          setDroppingPosition(newDroppingPosition);
-        }
+          },
+          newDroppingPosition
+        );
+        return;
+      }
+
+      if (
+        !droppingPosition ||
+        droppingPosition.left !== newDroppingPosition.left ||
+        droppingPosition.top !== newDroppingPosition.top
+      ) {
+        updateDropPlaceholder(finalDroppingItem, newDroppingPosition);
       }
     },
     [
-      droppingDOMNode,
-      droppingPosition,
-      droppingItem,
       dropConfigOnDragOver,
       onDropDragOverProp,
+      droppingDOMNode,
       removeDroppingPlaceholder,
-      transformScale,
+      droppingItem,
       cols,
       margin,
       maxRows,
       rowHeight,
       width,
-      effectiveContainerPadding
+      effectiveContainerPadding,
+      transformScale,
+      droppingPosition,
+      updateDropPlaceholder
     ]
   );
 
@@ -929,8 +1213,6 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       e.stopPropagation();
       dragEnterCounterRef.current--;
 
-      // Guard against negative counter (#2210)
-      // This can happen in edge cases with event timing or bubbling
       if (dragEnterCounterRef.current < 0) {
         dragEnterCounterRef.current = 0;
       }
@@ -954,7 +1236,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       e.stopPropagation();
 
       const currentLayout = layoutRef.current;
-      const item = currentLayout.find(l => l.i === droppingItem.i);
+      const item = currentLayout.find((l) => l.i === droppingItem.i);
       dragEnterCounterRef.current = 0;
       removeDroppingPlaceholder();
       onDropProp(currentLayout, item, e.nativeEvent);
@@ -962,37 +1244,32 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     [droppingItem.i, removeDroppingPlaceholder, onDropProp]
   );
 
-  // ============================================================================
-  // Render Helpers
-  // ============================================================================
-
   const processGridItem = useCallback(
-    (
-      child: ReactElement,
-      isDroppingItem?: boolean
-    ): ReactElement | null | undefined => {
-      if (!child || !child.key) return null;
+    (child: ReactElement, isDroppingItem?: boolean): ReactElement | null => {
+      if (!child || !child.key) {
+        return null;
+      }
 
-      const l = getLayoutItem(layout, String(child.key));
-      if (!l) return null;
+      const layoutItem = getLayoutItem(layout, String(child.key));
+      if (!layoutItem) {
+        return null;
+      }
 
       const draggable =
-        typeof l.isDraggable === "boolean"
-          ? l.isDraggable
-          : !l.static && isDraggable;
+        typeof layoutItem.isDraggable === "boolean"
+          ? layoutItem.isDraggable
+          : !layoutItem.static && isDraggable;
       const resizable =
-        typeof l.isResizable === "boolean"
-          ? l.isResizable
-          : !l.static && isResizable;
-      const resizeHandlesOptions = l.resizeHandles || [...resizeHandles];
-      const bounded = draggable && isBounded && l.isBounded !== false;
-
-      // Cast resize handle to expected type (function signature is compatible)
+        typeof layoutItem.isResizable === "boolean"
+          ? layoutItem.isResizable
+          : !layoutItem.static && isResizable;
+      const resizeHandlesOptions = layoutItem.resizeHandles || [...resizeHandles];
+      const bounded = draggable && isBounded && layoutItem.isBounded !== false;
       const resizeHandleElement = resizeHandle as ResizeHandle | undefined;
 
       return (
         <GridItem
-          key={l.i}
+          key={layoutItem.i}
           containerWidth={width}
           cols={cols}
           margin={margin}
@@ -1001,35 +1278,40 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
           rowHeight={rowHeight}
           cancel={draggableCancel}
           handle={draggableHandle}
-          onDragStart={onDragStart}
-          onDrag={onDrag}
-          onDragStop={onDragStop}
+          onDragStart={isDroppingItem ? undefined : onDragStart}
+          onDrag={isDroppingItem ? undefined : onDrag}
+          onDragStop={isDroppingItem ? undefined : onDragStop}
           onResizeStart={onResizeStart}
           onResize={onResize}
           onResizeStop={onResizeStop}
+          onResizeCancel={onResizeCancel}
           isDraggable={draggable}
           isResizable={resizable}
           isBounded={bounded}
+          enableSortable={!isDroppingItem}
           useCSSTransforms={useCSSTransforms && mounted}
           usePercentages={!mounted}
           transformScale={transformScale}
           positionStrategy={positionStrategy}
           dragThreshold={dragThreshold}
-          w={l.w}
-          h={l.h}
-          x={l.x}
-          y={l.y}
-          i={l.i}
-          minH={l.minH}
-          minW={l.minW}
-          maxH={l.maxH}
-          maxW={l.maxW}
-          static={l.static}
-          droppingPosition={isDroppingItem ? droppingPosition : undefined}
+          w={layoutItem.w}
+          h={layoutItem.h}
+          x={layoutItem.x}
+          y={layoutItem.y}
+          i={layoutItem.i}
+          minH={layoutItem.minH}
+          minW={layoutItem.minW}
+          maxH={layoutItem.maxH}
+          maxW={layoutItem.maxW}
+          static={layoutItem.static}
+          isDndKitDragSource={!isDroppingItem && dragOverlayId === layoutItem.i}
+          droppingPosition={
+            isDroppingItem ? interactionState.droppingPosition : undefined
+          }
           resizeHandles={resizeHandlesOptions}
           resizeHandle={resizeHandleElement}
           constraints={constraints}
-          layoutItem={l}
+          layoutItem={layoutItem}
           layout={layout}
         >
           {child}
@@ -1060,7 +1342,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       transformScale,
       positionStrategy,
       dragThreshold,
-      droppingPosition,
+      dragOverlayId,
+      interactionState.droppingPosition,
       resizeHandles,
       resizeHandle,
       constraints
@@ -1068,16 +1351,21 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
   );
 
   const renderPlaceholder = (): ReactElement | null => {
-    if (!activeDrag) return null;
+    if (!interactionState.isInteracting || !interactionState.activeDrag) {
+      return null;
+    }
+
+    const placeholderId = `__rgl-interaction-placeholder__${interactionState.activeDrag.i}`;
 
     return (
       <GridItem
-        w={activeDrag.w}
-        h={activeDrag.h}
-        x={activeDrag.x}
-        y={activeDrag.y}
-        i={activeDrag.i}
-        className={`react-grid-placeholder ${resizing ? "placeholder-resizing" : ""}`}
+        key={placeholderId}
+        w={interactionState.activeDrag.w}
+        h={interactionState.activeDrag.h}
+        x={interactionState.activeDrag.x}
+        y={interactionState.activeDrag.y}
+        i={placeholderId}
+        className={`react-grid-placeholder ${interactionState.resizing ? "placeholder-resizing" : ""}`}
         containerWidth={width}
         cols={cols}
         margin={margin}
@@ -1087,6 +1375,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         isDraggable={false}
         isResizable={false}
         isBounded={false}
+        onResizeCancel={onResizeCancel}
+        enableSortable={false}
         useCSSTransforms={useCSSTransforms}
         transformScale={transformScale}
         constraints={constraints}
@@ -1097,9 +1387,43 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     );
   };
 
-  // ============================================================================
-  // Render
-  // ============================================================================
+  const renderDragOverlay = useCallback((): ReactElement | null => {
+    if (!dragOverlayId) {
+      return null;
+    }
+
+    const child = childMap.get(dragOverlayId);
+    const session = activeDndDragRef.current;
+    if (!child || !session) {
+      return null;
+    }
+
+    const childProps = child.props as Record<string, unknown>;
+    const childClassName = childProps["className"] as string | undefined;
+    const childStyle = childProps["style"] as CSSProperties | undefined;
+    const size = calcGridItemPosition(
+      positionParams,
+      session.origin.x,
+      session.origin.y,
+      session.origin.w,
+      session.origin.h
+    );
+
+    return React.cloneElement(child, {
+      className: clsx(
+        "react-grid-item",
+        "react-draggable",
+        "react-draggable-dragging",
+        childClassName
+      ),
+      style: {
+        ...childStyle,
+        width: size.width,
+        height: size.height,
+        touchAction: "none"
+      }
+    } as Record<string, unknown>);
+  }, [childMap, dragOverlayId, positionParams]);
 
   const mergedClassName = clsx(layoutClassName, className);
   const mergedStyle: CSSProperties = {
@@ -1108,22 +1432,34 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
   };
 
   return (
-    <div
-      ref={innerRef}
-      className={mergedClassName}
-      style={mergedStyle}
-      onDrop={isDroppable ? handleDrop : undefined}
-      onDragLeave={isDroppable ? handleDragLeave : undefined}
-      onDragEnter={isDroppable ? handleDragEnter : undefined}
-      onDragOver={isDroppable ? handleDragOver : undefined}
+    <DragDropProvider
+      sensors={dndSensors}
+      onDragStart={handleDndKitDragStart}
+      onDragMove={handleDndKitDragMove}
+      onDragEnd={handleDndKitDragEnd}
     >
-      {React.Children.map(children, child => {
-        if (!React.isValidElement(child)) return null;
-        return processGridItem(child);
-      })}
-      {isDroppable && droppingDOMNode && processGridItem(droppingDOMNode, true)}
-      {renderPlaceholder()}
-    </div>
+      <div
+        ref={setContainerNode}
+        className={mergedClassName}
+        style={mergedStyle}
+        onDrop={isDroppable ? handleDrop : undefined}
+        onDragLeave={isDroppable ? handleDragLeave : undefined}
+        onDragEnter={isDroppable ? handleDragEnter : undefined}
+        onDragOver={isDroppable ? handleDragOver : undefined}
+      >
+        {React.Children.map(children, (child) => {
+          if (!React.isValidElement(child)) {
+            return null;
+          }
+          return processGridItem(child);
+        })}
+        {isDroppable && droppingDOMNode && processGridItem(droppingDOMNode, true)}
+        {renderPlaceholder()}
+      </div>
+      <DragOverlay disabled={!dragOverlayId} dropAnimation={null}>
+        {renderDragOverlay()}
+      </DragOverlay>
+    </DragDropProvider>
   );
 }
 

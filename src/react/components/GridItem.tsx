@@ -1,7 +1,9 @@
 /**
  * GridItem component
  *
- * An individual item within a grid layout. Handles dragging and resizing.
+ * Workspace migration version: removes direct react-draggable/react-resizable
+ * coupling and preserves the existing grid math/callback contracts with native
+ * pointer-driven drag and resize interactions.
  */
 
 import React, {
@@ -10,12 +12,17 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  type ReactNode,
   type ReactElement,
   type CSSProperties
 } from "react";
-import { DraggableCore, type DraggableEventHandler } from "react-draggable";
-import { Resizable } from "react-resizable";
 import clsx from "clsx";
+import {
+  isRuntimeDndAvailable,
+  useRuntimeDragDropMonitor,
+  useRuntimeDraggable,
+  useRuntimeSortable
+} from "../dnd/runtime.js";
 
 import type {
   Position,
@@ -50,11 +57,23 @@ import {
   resizeItemInDirection
 } from "../../core/position.js";
 
-// ============================================================================
-// Types
-// ============================================================================
-
 type PartialPosition = { top: number; left: number };
+
+type ResizeHandleElementProps = {
+  className?: string;
+  onPointerDown?: React.PointerEventHandler<HTMLElement>;
+  onMouseDown?: React.MouseEventHandler<HTMLElement>;
+  onTouchStart?: React.TouchEventHandler<HTMLElement>;
+  style?: CSSProperties;
+};
+
+type DragInputEvent = MouseEvent | PointerEvent | TouchEvent;
+type NativeInputKind = "pointer" | "mouse" | "touch";
+
+type ResizeStartEvent =
+  | React.PointerEvent<HTMLElement>
+  | React.MouseEvent<HTMLElement>
+  | React.TouchEvent<HTMLElement>;
 
 export type GridItemCallback<Data extends GridDragEvent | GridResizeEvent> = (
   i: string,
@@ -70,127 +89,362 @@ export type ResizeHandle =
       ref: React.Ref<HTMLElement>
     ) => ReactElement);
 
-// Internal callback data type with typed handle
+export interface GridItemDragData {
+  kind: "drag";
+  itemId: string;
+}
+
+export interface GridItemResizeData {
+  kind: "resize";
+  itemId: string;
+  axis: ResizeHandleAxis;
+}
+
 interface ResizeCallbackData {
   node: HTMLElement;
   size: { width: number; height: number };
   handle: ResizeHandleAxis;
 }
 
-// react-resizable callback type (handle is string)
-type ReactResizableCallback = (
-  e: React.SyntheticEvent,
-  data: {
-    node: HTMLElement;
-    size: { width: number; height: number };
-    handle: string;
-  }
-) => void;
-
-export interface GridItemProps {
-  /** Child element to render */
-  children: ReactElement;
-  /** Number of columns in the grid */
-  cols: number;
-  /** Width of the container in pixels */
-  containerWidth: number;
-  /** Margin between items [x, y] */
-  margin: readonly [number, number];
-  /** Padding inside the container [x, y] */
-  containerPadding: readonly [number, number];
-  /** Height of each row in pixels */
-  rowHeight: number;
-  /** Maximum number of rows */
-  maxRows: number;
-  /** Whether the item can be dragged */
-  isDraggable: boolean;
-  /** Whether the item can be resized */
-  isResizable: boolean;
-  /** Whether the item is bounded within the container */
-  isBounded: boolean;
-  /** Whether the item is static (can't be moved/resized) */
-  static?: boolean;
-  /** Use CSS transforms instead of top/left */
-  useCSSTransforms?: boolean;
-  /** Use percentage widths for server rendering */
-  usePercentages?: boolean;
-  /** Scale factor for transforms */
-  transformScale?: number;
-  /** Position strategy for custom positioning (#2217) */
-  positionStrategy?: PositionStrategy;
-  /** Drag threshold in pixels before drag starts (#2217) */
-  dragThreshold?: number;
-  /** Current position of a dropping element */
-  droppingPosition?: DroppingPosition;
-
-  /** Additional class name */
-  className?: string;
-  /** Additional styles */
-  style?: CSSProperties;
-
-  /** CSS selector for draggable handle */
-  handle?: string;
-  /** CSS selector for cancel handle */
-  cancel?: string;
-
-  /** X position in grid units */
-  x: number;
-  /** Y position in grid units */
-  y: number;
-  /** Width in grid units */
-  w: number;
-  /** Height in grid units */
-  h: number;
-
-  /** Minimum width in grid units */
-  minW?: number;
-  /** Maximum width in grid units */
-  maxW?: number;
-  /** Minimum height in grid units */
-  minH?: number;
-  /** Maximum height in grid units */
-  maxH?: number;
-
-  /** Unique identifier */
-  i: string;
-
-  /** Which resize handles to show */
-  resizeHandles?: ResizeHandleAxis[];
-  /** Custom resize handle */
-  resizeHandle?: ResizeHandle;
-
-  /** Layout constraints for position/size limiting */
-  constraints?: LayoutConstraint[];
-
-  /** The layout item data (for per-item constraints) */
-  layoutItem?: LayoutItemType;
-
-  /** Current layout (for constraint context) */
-  layout?: Layout;
-
-  /** Called when drag starts */
-  onDragStart?: GridItemCallback<GridDragEvent>;
-  /** Called during drag */
-  onDrag?: GridItemCallback<GridDragEvent>;
-  /** Called when drag stops */
-  onDragStop?: GridItemCallback<GridDragEvent>;
-  /** Called when resize starts */
-  onResizeStart?: GridItemCallback<GridResizeEvent>;
-  /** Called during resize */
-  onResize?: GridItemCallback<GridResizeEvent>;
-  /** Called when resize stops */
-  onResizeStop?: GridItemCallback<GridResizeEvent>;
+interface DragSession {
+  cleanup: () => void;
 }
 
-// ============================================================================
-// Component
-// ============================================================================
+interface ResizeSession {
+  cleanup: () => void;
+}
 
-/**
- * GridItem - An individual item within a grid layout.
- *
- * Wraps a child element with drag and resize functionality.
- */
+interface ActiveDndResizeSession {
+  axis: ResizeHandleAxis;
+  node: HTMLElement;
+  origin: Position;
+  /** Initial pointer coordinates from the activator event — used to compute
+   * a real-time delta because event.operation.transform is stale in dnd-kit v0.3.2
+   * (position.current is updated in a queueMicrotask after dragmove fires). */
+  initialPointer: { x: number; y: number };
+}
+
+function describeElementForDebug(node: EventTarget | null | undefined): string | null {
+  if (!(node instanceof Element)) {
+    return null;
+  }
+
+  const className =
+    typeof node.className === "string" ? node.className.trim() : "";
+  return className.length > 0
+    ? `${node.tagName.toLowerCase()}.${className.replace(/\s+/g, ".")}`
+    : node.tagName.toLowerCase();
+}
+
+function getGridItemResizeData(
+  data: unknown
+): GridItemResizeData | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const itemId = (data as { itemId?: unknown }).itemId;
+  const axis = (data as { axis?: unknown }).axis;
+  const kind = (data as { kind?: unknown }).kind;
+  return kind === "resize" &&
+    typeof itemId === "string" &&
+    typeof axis === "string"
+    ? { kind, itemId, axis: axis as ResizeHandleAxis }
+    : null;
+}
+
+interface GridResizeHandleProps {
+  axis: ResizeHandleAxis;
+  itemId: string;
+  resizeHandle?: ResizeHandle;
+  supportsDndKitResize: boolean;
+  onPointerDown?: React.PointerEventHandler<HTMLElement>;
+  onMouseDown?: React.MouseEventHandler<HTMLElement>;
+  onTouchStart?: React.TouchEventHandler<HTMLElement>;
+}
+
+function GridResizeHandle({
+  axis,
+  itemId,
+  resizeHandle,
+  supportsDndKitResize,
+  onPointerDown,
+  onMouseDown,
+  onTouchStart
+}: GridResizeHandleProps): ReactElement {
+  const commonClassName = clsx(
+    "react-resizable-handle",
+    `react-resizable-handle-${axis}`
+  );
+  const { ref: resizeRef } = useRuntimeDraggable<GridItemResizeData>({
+    id: `${itemId}:resize:${axis}`,
+    data: {
+      kind: "resize",
+      itemId,
+      axis
+    },
+    disabled: !supportsDndKitResize,
+    feedback: "none"
+  });
+  const commonProps = {
+    className: commonClassName,
+    onPointerDown,
+    onMouseDown,
+    onTouchStart,
+    ref: supportsDndKitResize ? resizeRef : null,
+    style: { touchAction: "none" } as CSSProperties
+  };
+
+  if (typeof resizeHandle === "function") {
+    return React.cloneElement(
+      resizeHandle(axis, supportsDndKitResize ? resizeRef : null) as ReactElement<ResizeHandleElementProps>,
+      commonProps
+    );
+  }
+
+  if (React.isValidElement(resizeHandle)) {
+    const element = resizeHandle as ReactElement<ResizeHandleElementProps>;
+    return React.cloneElement(element, {
+      ...commonProps,
+      className: clsx(commonClassName, element.props.className)
+    });
+  }
+
+  return <span key={axis} {...commonProps} />;
+}
+
+export interface GridItemProps {
+  children: ReactElement;
+  cols: number;
+  containerWidth: number;
+  margin: readonly [number, number];
+  containerPadding: readonly [number, number];
+  rowHeight: number;
+  maxRows: number;
+  isDraggable: boolean;
+  isResizable: boolean;
+  isBounded: boolean;
+  static?: boolean;
+  useCSSTransforms?: boolean;
+  usePercentages?: boolean;
+  transformScale?: number;
+  positionStrategy?: PositionStrategy;
+  dragThreshold?: number;
+  droppingPosition?: DroppingPosition;
+  enableSortable?: boolean;
+  className?: string;
+  style?: CSSProperties;
+  handle?: string;
+  cancel?: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  minW?: number;
+  maxW?: number;
+  minH?: number;
+  maxH?: number;
+  i: string;
+  resizeHandles?: ResizeHandleAxis[];
+  resizeHandle?: ResizeHandle;
+  constraints?: LayoutConstraint[];
+  layoutItem?: LayoutItemType;
+  layout?: Layout;
+  onDragStart?: GridItemCallback<GridDragEvent>;
+  onDrag?: GridItemCallback<GridDragEvent>;
+  onDragStop?: GridItemCallback<GridDragEvent>;
+  onResizeStart?: GridItemCallback<GridResizeEvent>;
+  onResize?: GridItemCallback<GridResizeEvent>;
+  onResizeStop?: GridItemCallback<GridResizeEvent>;
+  onResizeCancel?: (itemId: string) => void;
+  /**
+   * When true, this item is currently the dnd-kit drag source (tracked by our
+   * own React state via dragOverlayId). We use this — not dnd-kit's own
+   * `isSortableDragSource` — to apply `visibility:hidden`, because dnd-kit's
+   * reset is asynchronous and may lag behind our state update, leaving the
+   * element invisible and un-clickable after the drag completes.
+   */
+  isDndKitDragSource?: boolean;
+}
+
+function getTargetElement(target: EventTarget | null): HTMLElement | null {
+  return target instanceof HTMLElement ? target : null;
+}
+
+function isTouchInputEvent(event: Event): event is TouchEvent {
+  return "changedTouches" in event;
+}
+
+function isMouseLikeInputEvent(
+  event: DragInputEvent
+): event is MouseEvent | PointerEvent {
+  return !isTouchInputEvent(event);
+}
+
+function getTrackedTouch(
+  event: TouchEvent,
+  touchId?: number
+): Touch | null {
+  const touchLists = [event.changedTouches, event.touches, event.targetTouches];
+
+  for (const touchList of touchLists) {
+    for (let index = 0; index < touchList.length; index += 1) {
+      const touch =
+        typeof touchList.item === "function"
+          ? touchList.item(index)
+          : touchList[index];
+      if (!touch) {
+        continue;
+      }
+      if (touchId === undefined || touch.identifier === touchId) {
+        return touch;
+      }
+    }
+  }
+
+  return null;
+}
+
+function getInputCoordinates(
+  event: DragInputEvent,
+  touchId?: number
+): { clientX: number; clientY: number } | null {
+  if (isTouchInputEvent(event)) {
+    const touch = getTrackedTouch(event, touchId);
+    return touch
+      ? { clientX: touch.clientX, clientY: touch.clientY }
+      : null;
+  }
+
+  return { clientX: event.clientX, clientY: event.clientY };
+}
+
+function createResizeCandidate(
+  origin: Position,
+  handle: ResizeHandleAxis,
+  deltaX: number,
+  deltaY: number
+): Position {
+  const next: Position = { ...origin };
+
+  if (handle.includes("e")) {
+    next.width = origin.width + deltaX;
+  }
+  if (handle.includes("s")) {
+    next.height = origin.height + deltaY;
+  }
+  if (handle.includes("w")) {
+    next.width = origin.width - deltaX;
+    next.left = origin.left + deltaX;
+  }
+  if (handle.includes("n")) {
+    next.height = origin.height - deltaY;
+    next.top = origin.top + deltaY;
+  }
+
+  return next;
+}
+
+function isPrimaryInputStart(
+  kind: NativeInputKind,
+  event: DragInputEvent
+): boolean {
+  if (kind === "touch") {
+    return true;
+  }
+
+  return isMouseLikeInputEvent(event) && event.button === 0;
+}
+
+function getTrackedInputId(
+  kind: NativeInputKind,
+  event: DragInputEvent
+): number | undefined {
+  return kind === "touch" && isTouchInputEvent(event)
+    ? getTrackedTouch(event)?.identifier
+    : undefined;
+}
+
+function isTrackedInputEvent(
+  kind: NativeInputKind,
+  startEvent: DragInputEvent,
+  nextEvent: DragInputEvent
+): boolean {
+  if (
+    kind === "pointer" &&
+    nextEvent instanceof PointerEvent &&
+    startEvent instanceof PointerEvent
+  ) {
+    return nextEvent.pointerId === startEvent.pointerId;
+  }
+
+  return true;
+}
+
+function preventTouchMoveDefault(
+  kind: NativeInputKind,
+  event: DragInputEvent
+): void {
+  if (kind === "touch" && isTouchInputEvent(event)) {
+    event.preventDefault();
+  }
+}
+
+function createNativeInteractionSession(
+  kind: NativeInputKind,
+  startEvent: DragInputEvent,
+  node: HTMLElement,
+  onMove: (event: DragInputEvent) => void,
+  onEnd: (event: DragInputEvent) => void
+): () => void {
+  const ownerDocument = node.ownerDocument ?? document;
+
+  if (kind === "pointer" && startEvent instanceof PointerEvent) {
+    const moveListener = (moveEvent: PointerEvent) => onMove(moveEvent);
+    const endListener = (endEvent: PointerEvent) => onEnd(endEvent);
+    ownerDocument.addEventListener("pointermove", moveListener);
+    ownerDocument.addEventListener("pointerup", endListener);
+    ownerDocument.addEventListener("pointercancel", endListener);
+    node.setPointerCapture?.(startEvent.pointerId);
+    return () => {
+      ownerDocument.removeEventListener("pointermove", moveListener);
+      ownerDocument.removeEventListener("pointerup", endListener);
+      ownerDocument.removeEventListener("pointercancel", endListener);
+      if (node.hasPointerCapture?.(startEvent.pointerId)) {
+        node.releasePointerCapture(startEvent.pointerId);
+      }
+    };
+  }
+
+  if (kind === "mouse" && startEvent instanceof MouseEvent) {
+    const moveListener = (moveEvent: MouseEvent) => onMove(moveEvent);
+    const endListener = (endEvent: MouseEvent) => onEnd(endEvent);
+    ownerDocument.addEventListener("mousemove", moveListener);
+    ownerDocument.addEventListener("mouseup", endListener);
+    return () => {
+      ownerDocument.removeEventListener("mousemove", moveListener);
+      ownerDocument.removeEventListener("mouseup", endListener);
+    };
+  }
+
+  if (kind === "touch" && isTouchInputEvent(startEvent)) {
+    const moveListener = (moveEvent: TouchEvent) => onMove(moveEvent);
+    const endListener = (endEvent: TouchEvent) => onEnd(endEvent);
+    ownerDocument.addEventListener("touchmove", moveListener, {
+      passive: false
+    });
+    ownerDocument.addEventListener("touchend", endListener);
+    ownerDocument.addEventListener("touchcancel", endListener);
+    return () => {
+      ownerDocument.removeEventListener("touchmove", moveListener);
+      ownerDocument.removeEventListener("touchend", endListener);
+      ownerDocument.removeEventListener("touchcancel", endListener);
+    };
+  }
+
+  return () => {};
+}
+
 export function GridItem(props: GridItemProps): ReactElement {
   const {
     children,
@@ -210,6 +464,7 @@ export function GridItem(props: GridItemProps): ReactElement {
     positionStrategy,
     dragThreshold = 0,
     droppingPosition,
+    enableSortable = true,
     className = "",
     style,
     handle = "",
@@ -226,6 +481,7 @@ export function GridItem(props: GridItemProps): ReactElement {
     resizeHandles,
     resizeHandle,
     constraints = defaultConstraints,
+    isDndKitDragSource = false,
     layoutItem,
     layout = [],
     onDragStart: onDragStartProp,
@@ -233,14 +489,13 @@ export function GridItem(props: GridItemProps): ReactElement {
     onDragStop: onDragStopProp,
     onResizeStart: onResizeStartProp,
     onResize: onResizeProp,
-    onResizeStop: onResizeStopProp
+    onResizeStop: onResizeStopProp,
+    onResizeCancel: onResizeCancelProp
   } = props;
 
-  // State
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
 
-  // Refs for position tracking (avoid state for React 18 batching)
   const elementRef = useRef<HTMLDivElement>(null);
   const dragPositionRef = useRef<PartialPosition>({ left: 0, top: 0 });
   const resizePositionRef = useRef<Position>({
@@ -249,34 +504,90 @@ export function GridItem(props: GridItemProps): ReactElement {
     width: 0,
     height: 0
   });
-
-  // Previous dropping position for comparison
-  const prevDroppingPositionRef = useRef<DroppingPosition | undefined>(
-    undefined
-  );
-
-  // Ref to current layout - Critical for preventing infinite update loops (#2210).
-  // The dropping item effect depends on onDrag, which needs layout for constraints.
-  // If we included layout directly, onDrag would be recreated on every layout change,
-  // causing the effect to re-run and update layout again, creating an infinite loop.
+  const prevDroppingPositionRef = useRef<DroppingPosition | undefined>(undefined);
   const layoutRef = useRef<Layout>(layout);
-  layoutRef.current = layout;
-
-  // Refs to callbacks for use in dropping item effect (#2210).
-  // The dropping item effect must NOT depend on onDragStart/onDrag callbacks because:
-  // 1. When dragging state changes, onDrag callback is recreated
-  // 2. When layout changes, effectiveLayoutItem changes, causing callbacks to recreate
-  // Using refs allows us to call the latest callback without the effect re-running.
-  const onDragStartRef = useRef<DraggableEventHandler | null>(null);
-  const onDragRef = useRef<DraggableEventHandler | null>(null);
-
-  // Drag threshold tracking (#2217)
-  // Tracks whether we're waiting to exceed the threshold before starting the drag
+  const dragSessionRef = useRef<DragSession | null>(null);
+  const resizeSessionRef = useRef<ResizeSession | null>(null);
   const dragPendingRef = useRef(false);
   const initialDragClientRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const thresholdExceededRef = useRef(false);
+  const draggingRef = useRef(false);
+  const activeDndResizeRef = useRef<ActiveDndResizeSession | null>(null);
+  const runtimeDndAvailable = isRuntimeDndAvailable();
+  const nativePointerEventsAvailable =
+    typeof window !== "undefined" && "PointerEvent" in window;
+  const runtimePointerEventsAvailable =
+    enableSortable &&
+    nativePointerEventsAvailable;
+  const supportsDndKitRuntime =
+    runtimeDndAvailable && runtimePointerEventsAvailable;
+  const supportsDndKitDrag =
+    supportsDndKitRuntime && isDraggable && !isStatic;
+  const supportsDndKitResize =
+    supportsDndKitRuntime && isResizable && !isStatic;
+  const useNativeDragFallback =
+    !supportsDndKitDrag && isDraggable && !isStatic;
+  const useNativeResizeFallback =
+    !supportsDndKitResize && isResizable && !isStatic;
 
-  // Position parameters
+  layoutRef.current = layout;
+
+  const resolvedResizeHandles = useMemo<ResizeHandleAxis[]>(
+    () => [...(resizeHandles ?? ["se"])],
+    [resizeHandles]
+  );
+  const sortableIndex = useMemo(
+    () => Math.max(0, layout.findIndex((item) => item.i === i)),
+    [layout, i]
+  );
+  const {
+    isDragSource: isSortableDragSource,
+    ref: sortableRef,
+    handleRef: sortableHandleRef
+  } = useRuntimeSortable<GridItemDragData>({
+    id: i,
+    index: sortableIndex,
+    group: "react-grid-layout",
+    data: { kind: "drag", itemId: i },
+    disabled: !supportsDndKitDrag,
+    feedback: "none",
+    transition: null
+  });
+
+  const dragCancelSelector = useMemo(
+    () =>
+      [".react-resizable-handle", cancel]
+        .filter((value): value is string => value.length > 0)
+        .join(","),
+    [cancel]
+  );
+  const setElementRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      elementRef.current = node;
+      console.debug("[GridItem] setElementRef", {
+        i,
+        node: describeElementForDebug(node),
+        connected: node?.isConnected ?? false,
+        supportsDndKitDrag,
+        handle
+      });
+      sortableRef(node);
+        if (!supportsDndKitDrag) {
+          sortableHandleRef(null);
+          return;
+        }
+
+        const handleElement = handle && node ? node.querySelector(handle) : null;
+      console.debug("[GridItem] setElementRef: sortable handle assigned", {
+        i,
+        handle,
+        handleElement: describeElementForDebug(handleElement)
+      });
+        sortableHandleRef(handleElement instanceof Element ? handleElement : null);
+    },
+    [handle, i, sortableHandleRef, sortableRef, supportsDndKitDrag]
+  );
+
   const positionParams: PositionParams = useMemo(
     () => ({
       cols,
@@ -289,26 +600,68 @@ export function GridItem(props: GridItemProps): ReactElement {
     [cols, containerPadding, containerWidth, margin, maxRows, rowHeight]
   );
 
-  // Constraint context for applying constraints
-  // Note: This does NOT include layout in its dependencies to prevent infinite loops (#2210).
-  // The layout is accessed via layoutRef.current inside the callbacks that use this context.
+  interface GridItemDndSnapshot {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    gridX: number;
+    gridY: number;
+  }
+
+  function createGridItemDndSnapshot(
+    snapshotParams: PositionParams,
+    item: Pick<GridItemProps, "x" | "y" | "w" | "h">,
+    dragPosition?: { top: number; left: number } | null,
+    resizePosition?: Position | null
+  ): GridItemDndSnapshot {
+    const position = calcGridItemPosition(
+      snapshotParams,
+      item.x,
+      item.y,
+      item.w,
+      item.h,
+      dragPosition ?? null,
+      resizePosition ?? null
+    );
+    const { x: gridX, y: gridY } = calcXYRaw(
+      snapshotParams,
+      position.top,
+      position.left
+    );
+    return {
+      left: position.left,
+      top: position.top,
+      width: position.width,
+      height: position.height,
+      gridX,
+      gridY
+    };
+  }
+
+  function getGridItemPixelDelta(
+    previous: { top: number; left: number },
+    next: { top: number; left: number }
+  ): { deltaX: number; deltaY: number } {
+    return {
+      deltaX: next.left - previous.left,
+      deltaY: next.top - previous.top
+    };
+  }
+
   const constraintContext: ConstraintContext = useMemo(
     () => ({
       cols,
       maxRows,
       containerWidth,
-      containerHeight: 0, // Auto-height grids don't have a fixed container height
+      containerHeight: 0,
       rowHeight,
       margin,
-      // Use empty layout here - the actual layout will be accessed via layoutRef when needed
-      // This prevents the context from changing when layout changes, avoiding callback recreation
       layout: []
     }),
     [cols, maxRows, containerWidth, rowHeight, margin]
   );
 
-  // Create a getter for constraint context with current layout
-  // This is called inside callbacks to get fresh layout data without causing re-renders
   const getConstraintContext = useCallback(
     (): ConstraintContext => ({
       ...constraintContext,
@@ -316,8 +669,12 @@ export function GridItem(props: GridItemProps): ReactElement {
     }),
     [constraintContext]
   );
+  const getRuntimeInteractionEvent = useCallback(
+    (event: { nativeEvent?: Event; operation: { activatorEvent: Event | null } }) =>
+      event.nativeEvent ?? event.operation.activatorEvent ?? new Event("drag"),
+    []
+  );
 
-  // Effective layout item (use provided or create from props)
   const effectiveLayoutItem: LayoutItemType = useMemo(
     () =>
       layoutItem ?? {
@@ -334,97 +691,113 @@ export function GridItem(props: GridItemProps): ReactElement {
     [layoutItem, i, x, y, w, h, minW, maxW, minH, maxH]
   );
 
-  // ============================================================================
-  // Style Creation
-  // ============================================================================
-
   const createStyle = useCallback(
     (pos: Position): CSSProperties => {
-      // Use custom positionStrategy.calcStyle() if provided (#2217)
       if (positionStrategy?.calcStyle) {
         return positionStrategy.calcStyle(pos);
       }
 
-      // Default positioning based on useCSSTransforms
       if (useCSSTransforms) {
         return setTransform(pos) as CSSProperties;
       }
 
-      const styleObj = setTopLeft(pos) as CSSProperties;
-
+      const styleObject = setTopLeft(pos) as CSSProperties;
       if (usePercentages) {
         return {
-          ...styleObj,
+          ...styleObject,
           left: perc(pos.left / containerWidth),
           width: perc(pos.width / containerWidth)
         };
       }
 
-      return styleObj;
+      return styleObject;
     },
     [positionStrategy, useCSSTransforms, usePercentages, containerWidth]
   );
 
-  // ============================================================================
-  // Drag Handlers
-  // ============================================================================
-
-  const onDragStart: DraggableEventHandler = useCallback(
-    (e, { node }) => {
-      if (!onDragStartProp) return;
-
+  const getDragStartPosition = useCallback(
+    (clientX: number, clientY: number, node: HTMLElement): PartialPosition | null => {
       const { offsetParent } = node;
-      if (!offsetParent) return;
+      if (!offsetParent) {
+        return null;
+      }
 
       const parentRect = offsetParent.getBoundingClientRect();
       const clientRect = node.getBoundingClientRect();
-
       const cLeft = clientRect.left / transformScale;
       const pLeft = parentRect.left / transformScale;
       const cTop = clientRect.top / transformScale;
       const pTop = parentRect.top / transformScale;
 
-      // Use custom positionStrategy.calcDragPosition() if provided (#2217)
-      let newPosition: PartialPosition;
       if (positionStrategy?.calcDragPosition) {
-        const mouseEvent = e as unknown as MouseEvent;
-        newPosition = positionStrategy.calcDragPosition(
-          mouseEvent.clientX,
-          mouseEvent.clientY,
-          mouseEvent.clientX - clientRect.left,
-          mouseEvent.clientY - clientRect.top
+        return positionStrategy.calcDragPosition(
+          clientX,
+          clientY,
+          clientX - clientRect.left,
+          clientY - clientRect.top
         );
-      } else {
-        newPosition = {
-          left: cLeft - pLeft + offsetParent.scrollLeft,
-          top: cTop - pTop + offsetParent.scrollTop
-        };
       }
 
-      dragPositionRef.current = newPosition;
+      return {
+        left: cLeft - pLeft + offsetParent.scrollLeft,
+        top: cTop - pTop + offsetParent.scrollTop
+      };
+    },
+    [positionStrategy, transformScale]
+  );
 
-      // Threshold support (#2217) - if threshold is set, delay calling onDragStartProp
-      // until the mouse has moved at least `dragThreshold` pixels
-      if (dragThreshold > 0) {
-        const mouseEvent = e as unknown as MouseEvent;
-        initialDragClientRef.current = {
-          x: mouseEvent.clientX,
-          y: mouseEvent.clientY
-        };
-        dragPendingRef.current = true;
-        thresholdExceededRef.current = false;
-        setDragging(true);
-        return; // Don't call onDragStartProp yet
+  const clearDragSession = useCallback(() => {
+    const session = dragSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    session.cleanup();
+    dragSessionRef.current = null;
+  }, []);
+
+  const clearResizeSession = useCallback(() => {
+    const session = resizeSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    session.cleanup();
+    resizeSessionRef.current = null;
+  }, []);
+
+  const emitDragStart = useCallback(
+    (
+      event: Event,
+      node: HTMLElement,
+      newPosition: PartialPosition,
+      skipThreshold: boolean,
+      clientX?: number,
+      clientY?: number
+    ) => {
+      console.debug("[GridItem] emitDragStart", { i, skipThreshold, clientX, clientY, newPosition });
+      dragPositionRef.current = newPosition;
+      if (clientX !== undefined && clientY !== undefined) {
+        initialDragClientRef.current = { x: clientX, y: clientY };
       }
 
       setDragging(true);
+      draggingRef.current = true;
 
-      // Calculate raw position and apply constraints
-      const rawPos = calcXYRaw(
-        positionParams,
-        newPosition.top,
-        newPosition.left
-      );
+      if (dragThreshold > 0 && !skipThreshold) {
+        dragPendingRef.current = true;
+        thresholdExceededRef.current = false;
+        return;
+      }
+
+      dragPendingRef.current = false;
+      thresholdExceededRef.current = true;
+
+      if (!onDragStartProp) {
+        return;
+      }
+
+      const rawPos = calcXYRaw(positionParams, newPosition.top, newPosition.left);
       const { x: newX, y: newY } = applyPositionConstraints(
         constraints,
         effectiveLayoutItem,
@@ -433,18 +806,17 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
+      console.debug("[GridItem] calling onDragStartProp", i, newX, newY);
       onDragStartProp(i, newX, newY, {
-        e: e as unknown as Event,
+        e: event,
         node,
         newPosition
       });
     },
     [
-      onDragStartProp,
-      transformScale,
-      positionParams,
-      positionStrategy,
       dragThreshold,
+      onDragStartProp,
+      positionParams,
       constraints,
       effectiveLayoutItem,
       getConstraintContext,
@@ -452,28 +824,36 @@ export function GridItem(props: GridItemProps): ReactElement {
     ]
   );
 
-  const onDrag: DraggableEventHandler = useCallback(
-    (e, { node, deltaX, deltaY }) => {
-      if (!onDragProp || !dragging) return;
+  const emitDragMove = useCallback(
+    (
+      event: Event,
+      node: HTMLElement,
+      deltaX: number,
+      deltaY: number,
+      clientX?: number,
+      clientY?: number
+    ) => {
+      console.debug("[GridItem] emitDragMove", { i, deltaX, deltaY, clientX, clientY });
+      if (!draggingRef.current && !dragPendingRef.current) {
+        return;
+      }
 
-      const mouseEvent = e as unknown as MouseEvent;
-
-      // Threshold support (#2217) - check if we've exceeded the threshold
-      if (dragPendingRef.current && !thresholdExceededRef.current) {
-        const dx = mouseEvent.clientX - initialDragClientRef.current.x;
-        const dy = mouseEvent.clientY - initialDragClientRef.current.y;
+      if (
+        dragPendingRef.current &&
+        !thresholdExceededRef.current &&
+        clientX !== undefined &&
+        clientY !== undefined
+      ) {
+        const dx = clientX - initialDragClientRef.current.x;
+        const dy = clientY - initialDragClientRef.current.y;
         const distance = Math.hypot(dx, dy);
-
         if (distance < dragThreshold) {
-          // Haven't exceeded threshold yet, don't trigger drag
           return;
         }
 
-        // Threshold exceeded! Call onDragStartProp first, then continue with onDrag
         thresholdExceededRef.current = true;
         dragPendingRef.current = false;
 
-        // Call onDragStartProp now that threshold is exceeded
         if (onDragStartProp) {
           const rawPos = calcXYRaw(
             positionParams,
@@ -487,8 +867,9 @@ export function GridItem(props: GridItemProps): ReactElement {
             rawPos.y,
             getConstraintContext()
           );
+          console.debug("[GridItem] emitting onDragStart from pending state", i, startX, startY);
           onDragStartProp(i, startX, startY, {
-            e: e as unknown as Event,
+            e: event,
             node,
             newPosition: dragPositionRef.current
           });
@@ -498,13 +879,11 @@ export function GridItem(props: GridItemProps): ReactElement {
       let top = dragPositionRef.current.top + deltaY;
       let left = dragPositionRef.current.left + deltaX;
 
-      // Pixel-level boundary calculations (isBounded affects pixel position)
       if (isBounded) {
         const { offsetParent } = node;
         if (offsetParent) {
           const bottomBoundary =
-            offsetParent.clientHeight -
-            calcGridItemWHPx(h, rowHeight, margin[1]);
+            offsetParent.clientHeight - calcGridItemWHPx(h, rowHeight, margin[1]);
           top = clamp(top, 0, bottomBoundary);
 
           const colWidth = calcGridColWidth(positionParams);
@@ -517,7 +896,10 @@ export function GridItem(props: GridItemProps): ReactElement {
       const newPosition: PartialPosition = { top, left };
       dragPositionRef.current = newPosition;
 
-      // Calculate raw position and apply constraints
+      if (!onDragProp) {
+        return;
+      }
+
       const rawPos = calcXYRaw(positionParams, top, left);
       const { x: newX, y: newY } = applyPositionConstraints(
         constraints,
@@ -527,56 +909,60 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
+      console.debug("[GridItem] calling onDragProp", i, newX, newY);
       onDragProp(i, newX, newY, {
-        e: e as unknown as Event,
+        e: event,
         node,
         newPosition
       });
     },
     [
-      onDragProp,
-      onDragStartProp,
-      dragging,
       dragThreshold,
+      onDragStartProp,
+      positionParams,
+      constraints,
+      effectiveLayoutItem,
+      getConstraintContext,
+      i,
       isBounded,
       h,
       rowHeight,
       margin,
-      positionParams,
       containerWidth,
       w,
-      i,
-      constraints,
-      effectiveLayoutItem,
-      getConstraintContext
+      onDragProp
     ]
   );
 
-  const onDragStop: DraggableEventHandler = useCallback(
-    (e, { node }) => {
-      if (!onDragStopProp || !dragging) return;
+  const emitDragStop = useCallback(
+    (event: Event, node: HTMLElement) => {
+      console.debug("[GridItem] emitDragStop", { i, eventType: event?.type });
+      if (!draggingRef.current && !dragPendingRef.current) {
+        return;
+      }
 
-      // Reset threshold tracking (#2217)
       const wasPending = dragPendingRef.current;
       dragPendingRef.current = false;
       thresholdExceededRef.current = false;
       initialDragClientRef.current = { x: 0, y: 0 };
 
-      // If threshold was never exceeded, don't call onDragStopProp
-      // since onDragStartProp was never called
       if (wasPending) {
         setDragging(false);
+        draggingRef.current = false;
         dragPositionRef.current = { left: 0, top: 0 };
         return;
       }
 
       const { left, top } = dragPositionRef.current;
       const newPosition: PartialPosition = { top, left };
-
       setDragging(false);
+      draggingRef.current = false;
       dragPositionRef.current = { left: 0, top: 0 };
 
-      // Calculate raw position and apply constraints
+      if (!onDragStopProp) {
+        return;
+      }
+
       const rawPos = calcXYRaw(positionParams, top, left);
       const { x: newX, y: newY } = applyPositionConstraints(
         constraints,
@@ -586,15 +972,15 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
+      console.debug("[GridItem] calling onDragStopProp", i, newX, newY);
       onDragStopProp(i, newX, newY, {
-        e: e as unknown as Event,
+        e: event,
         node,
         newPosition
       });
     },
     [
       onDragStopProp,
-      dragging,
       positionParams,
       constraints,
       effectiveLayoutItem,
@@ -603,21 +989,14 @@ export function GridItem(props: GridItemProps): ReactElement {
     ]
   );
 
-  // Update callback refs for use in dropping item effect (#2210)
-  onDragStartRef.current = onDragStart;
-  onDragRef.current = onDrag;
-
-  // ============================================================================
-  // Resize Handlers
-  // ============================================================================
-
-  const onResizeHandler = useCallback(
+  const emitResize = useCallback(
     (
-      e: React.SyntheticEvent,
-      { node, size, handle: resizeHandle }: ResizeCallbackData,
-      position: Position,
-      handlerName: "onResizeStart" | "onResize" | "onResizeStop"
+      handlerName: "onResizeStart" | "onResize" | "onResizeStop",
+      event: Event,
+      data: ResizeCallbackData,
+      origin: Position
     ) => {
+      console.debug("[GridItem] emitResize", { i, handlerName, data, origin });
       const handler =
         handlerName === "onResizeStart"
           ? onResizeStartProp
@@ -625,28 +1004,22 @@ export function GridItem(props: GridItemProps): ReactElement {
             ? onResizeProp
             : onResizeStopProp;
 
-      if (!handler) return;
+      resizePositionRef.current = data.size as Position;
 
-      // Sizing based on resize direction
-      let updatedSize: Position;
-      if (node) {
-        updatedSize = resizeItemInDirection(
-          resizeHandle,
-          position,
-          size as Position,
-          containerWidth
-        );
-      } else {
-        updatedSize = {
-          ...size,
-          top: position.top,
-          left: position.left
-        } as Position;
+      if (!handler) {
+        console.debug("[GridItem] emitResize: no handler", handlerName);
+        return;
       }
+
+      const updatedSize = resizeItemInDirection(
+        data.handle,
+        origin,
+        data.size as Position,
+        containerWidth
+      );
 
       resizePositionRef.current = updatedSize;
 
-      // Calculate raw grid dimensions and apply constraints
       const rawSize = calcWHRaw(
         positionParams,
         updatedSize.width,
@@ -657,15 +1030,16 @@ export function GridItem(props: GridItemProps): ReactElement {
         effectiveLayoutItem,
         rawSize.w,
         rawSize.h,
-        resizeHandle,
+        data.handle,
         getConstraintContext()
       );
 
+      console.debug("[GridItem] calling resize handler", { i, handlerName, newW, newH, updatedSize });
       handler(i, newW, newH, {
-        e: e.nativeEvent,
-        node,
+        e: event,
+        node: data.node,
         size: updatedSize,
-        handle: resizeHandle
+        handle: data.handle
       });
     },
     [
@@ -674,210 +1048,743 @@ export function GridItem(props: GridItemProps): ReactElement {
       onResizeStopProp,
       containerWidth,
       positionParams,
-      i,
       constraints,
       effectiveLayoutItem,
-      getConstraintContext
+      getConstraintContext,
+      i
+    ]
+  );
+  const clearDndResizeState = useCallback(() => {
+    activeDndResizeRef.current = null;
+    setResizing(false);
+    resizePositionRef.current = { top: 0, left: 0, width: 0, height: 0 };
+  }, []);
+
+  useRuntimeDragDropMonitor({
+    onDragStart: (event) => {
+      console.debug("[GridItem] runtime onDragStart", { i, event });
+      const resizeData = getGridItemResizeData(event.operation.source?.data);
+      if (!supportsDndKitResize || !resizeData || resizeData.itemId !== i) {
+        console.debug("[GridItem] runtime onDragStart: ignored", { supportsDndKitResize, resizeData });
+        return;
+      }
+
+      const node = elementRef.current;
+      if (!node) {
+        console.debug("[GridItem] runtime onDragStart: no node");
+        return;
+      }
+
+      const origin = calcGridItemPosition(positionParams, x, y, w, h);
+      activeDndResizeRef.current = {
+        axis: resizeData.axis,
+        node,
+        origin,
+        initialPointer: (() => {
+          const ae = event.operation.activatorEvent as (MouseEvent | null);
+          return ae ? { x: ae.clientX ?? 0, y: ae.clientY ?? 0 } : { x: 0, y: 0 };
+        })()
+      };
+      setResizing(true);
+
+      emitResize(
+        "onResizeStart",
+        getRuntimeInteractionEvent(event),
+        { node, size: origin, handle: resizeData.axis },
+        origin
+      );
+    },
+    onDragMove: (event) => {
+      console.debug("[GridItem] runtime onDragMove", { i, event });
+      const session = activeDndResizeRef.current;
+      const resizeData = getGridItemResizeData(event.operation.source?.data);
+      if (
+        !session ||
+        !supportsDndKitResize ||
+        !resizeData ||
+        resizeData.itemId !== i ||
+        resizeData.axis !== session.axis
+      ) {
+        console.debug("[GridItem] runtime onDragMove: ignored", { session, resizeData });
+        return;
+      }
+
+      // Same stale-transform fix as for drag: use event.to (real-time pointer
+      // absolute coords from sensor) minus initialPointer to get true delta.
+      const moveTransform = (event as { to?: { x: number; y: number } }).to
+        ? {
+            x: (event as { to: { x: number; y: number } }).to.x - session.initialPointer.x,
+            y: (event as { to: { x: number; y: number } }).to.y - session.initialPointer.y
+          }
+        : event.operation.transform;
+
+      const nextCandidate = createResizeCandidate(
+        session.origin,
+        resizeData.axis,
+        moveTransform.x / transformScale,
+        moveTransform.y / transformScale
+      );
+
+      emitResize(
+        "onResize",
+        getRuntimeInteractionEvent(event),
+        { node: session.node, size: nextCandidate, handle: resizeData.axis },
+        session.origin
+      );
+    },
+    onDragEnd: (event) => {
+      console.debug("[GridItem] runtime onDragEnd", { i, event });
+      const session = activeDndResizeRef.current;
+      const resizeData = getGridItemResizeData(event.operation.source?.data);
+      if (
+        !session ||
+        !supportsDndKitResize ||
+        !resizeData ||
+        resizeData.itemId !== i ||
+        resizeData.axis !== session.axis
+      ) {
+        console.debug("[GridItem] runtime onDragEnd: ignored", { session, resizeData });
+        return;
+      }
+
+      // Same stale-transform fix for dragend: use nativeEvent (pointerup)
+      // clientX/Y minus initialPointer for the final accurate delta.
+      const nativeEnd =
+        event.nativeEvent instanceof PointerEvent ? event.nativeEvent : null;
+      const endTransform = nativeEnd
+        ? {
+            x: nativeEnd.clientX - session.initialPointer.x,
+            y: nativeEnd.clientY - session.initialPointer.y
+          }
+        : event.operation.transform;
+
+      const nextCandidate = event.canceled
+        ? session.origin
+        : createResizeCandidate(
+            session.origin,
+            resizeData.axis,
+            endTransform.x / transformScale,
+            endTransform.y / transformScale
+          );
+
+      if (event.canceled) {
+        onResizeCancelProp?.(i);
+        clearDndResizeState();
+        return;
+      }
+
+      emitResize(
+        "onResizeStop",
+        getRuntimeInteractionEvent(event),
+        { node: session.node, size: nextCandidate, handle: resizeData.axis },
+        session.origin
+      );
+      clearDndResizeState();
+    }
+  });
+
+  const startDragSession = useCallback(
+    (event: DragInputEvent, kind: NativeInputKind) => {
+      if (!isDraggable || isStatic || dragSessionRef.current) {
+        return;
+      }
+
+      if (!isPrimaryInputStart(kind, event)) {
+        return;
+      }
+
+      const node = elementRef.current;
+      const target = getTargetElement(event.target);
+      if (!node || !target) {
+        return;
+      }
+
+      if (dragCancelSelector && target.closest(dragCancelSelector)) {
+        return;
+      }
+      if (handle && !target.closest(handle)) {
+        return;
+      }
+
+      const touchId = getTrackedInputId(kind, event);
+      const startCoords = getInputCoordinates(event, touchId);
+      if (!startCoords) {
+        return;
+      }
+
+      const startPosition = getDragStartPosition(
+        startCoords.clientX,
+        startCoords.clientY,
+        node
+      );
+      if (!startPosition) {
+        return;
+      }
+
+      clearDragSession();
+      event.preventDefault();
+
+      let lastClientX = startCoords.clientX;
+      let lastClientY = startCoords.clientY;
+
+      const handleMove = (moveEvent: DragInputEvent) => {
+        if (!isTrackedInputEvent(kind, event, moveEvent)) {
+          return;
+        }
+
+        const coords = getInputCoordinates(moveEvent, touchId);
+        if (!coords) {
+          return;
+        }
+
+        preventTouchMoveDefault(kind, moveEvent);
+
+        const deltaX = (coords.clientX - lastClientX) / transformScale;
+        const deltaY = (coords.clientY - lastClientY) / transformScale;
+        lastClientX = coords.clientX;
+        lastClientY = coords.clientY;
+        emitDragMove(
+          moveEvent,
+          node,
+          deltaX,
+          deltaY,
+          coords.clientX,
+          coords.clientY
+        );
+      };
+
+      const handleEnd = (endEvent: DragInputEvent) => {
+        if (!isTrackedInputEvent(kind, event, endEvent)) {
+          return;
+        }
+
+        clearDragSession();
+        emitDragStop(endEvent, node);
+      };
+
+      dragSessionRef.current = {
+        cleanup: createNativeInteractionSession(
+          kind,
+          event,
+          node,
+          handleMove,
+          handleEnd
+        )
+      };
+      emitDragStart(
+        event,
+        node,
+        startPosition,
+        false,
+        startCoords.clientX,
+        startCoords.clientY
+      );
+    },
+    [
+      isDraggable,
+      isStatic,
+      dragCancelSelector,
+      handle,
+      getDragStartPosition,
+      clearDragSession,
+      transformScale,
+      emitDragMove,
+      emitDragStop,
+      emitDragStart
     ]
   );
 
-  const handleResizeStart: ReactResizableCallback = useCallback(
-    (e, data) => {
+  const handleDragPointerDown = useCallback(
+    (event: PointerEvent) => {
+      startDragSession(event, "pointer");
+    },
+    [startDragSession]
+  );
+
+  const handleDragMouseDown = useCallback(
+    (event: MouseEvent) => {
+      startDragSession(event, "mouse");
+    },
+    [startDragSession]
+  );
+
+  const handleDragTouchStart = useCallback(
+    (event: TouchEvent) => {
+      startDragSession(event, "touch");
+    },
+    [startDragSession]
+  );
+
+  const startResizeSession = useCallback(
+    (
+      handleAxis: ResizeHandleAxis,
+      nativeEvent: DragInputEvent,
+      kind: NativeInputKind
+    ) => {
+      if (!isResizable || isStatic || resizeSessionRef.current) {
+        return;
+      }
+
+      if (!isPrimaryInputStart(kind, nativeEvent)) {
+        return;
+      }
+
+      const node = elementRef.current;
+      if (!node) {
+        return;
+      }
+
+      const touchId = getTrackedInputId(kind, nativeEvent);
+      const startCoords = getInputCoordinates(nativeEvent, touchId);
+      if (!startCoords) {
+        return;
+      }
+
+      clearResizeSession();
+      nativeEvent.preventDefault();
       setResizing(true);
-      const pos = calcGridItemPosition(positionParams, x, y, w, h);
-      const typedData: ResizeCallbackData = {
-        ...data,
-        handle: data.handle as ResizeHandleAxis
+
+      const origin = calcGridItemPosition(positionParams, x, y, w, h);
+      emitResize(
+        "onResizeStart",
+        nativeEvent,
+        { node, size: origin, handle: handleAxis },
+        origin
+      );
+
+      const startClientX = startCoords.clientX;
+      const startClientY = startCoords.clientY;
+
+      const handleMove = (moveEvent: DragInputEvent) => {
+        if (!isTrackedInputEvent(kind, nativeEvent, moveEvent)) {
+          return;
+        }
+
+        const coords = getInputCoordinates(moveEvent, touchId);
+        if (!coords) {
+          return;
+        }
+
+        preventTouchMoveDefault(kind, moveEvent);
+
+        const deltaX = (coords.clientX - startClientX) / transformScale;
+        const deltaY = (coords.clientY - startClientY) / transformScale;
+        const nextCandidate = createResizeCandidate(
+          origin,
+          handleAxis,
+          deltaX,
+          deltaY
+        );
+        emitResize(
+          "onResize",
+          moveEvent,
+          { node, size: nextCandidate, handle: handleAxis },
+          origin
+        );
       };
-      onResizeHandler(e, typedData, pos, "onResizeStart");
+
+      const handleEnd = (endEvent: DragInputEvent) => {
+        if (!isTrackedInputEvent(kind, nativeEvent, endEvent)) {
+          return;
+        }
+
+        const coords = getInputCoordinates(endEvent, touchId) ?? startCoords;
+        const deltaX = (coords.clientX - startClientX) / transformScale;
+        const deltaY = (coords.clientY - startClientY) / transformScale;
+        const nextCandidate = createResizeCandidate(
+          origin,
+          handleAxis,
+          deltaX,
+          deltaY
+        );
+        clearResizeSession();
+        emitResize(
+          "onResizeStop",
+          endEvent,
+          { node, size: nextCandidate, handle: handleAxis },
+          origin
+        );
+        setResizing(false);
+        resizePositionRef.current = { top: 0, left: 0, width: 0, height: 0 };
+      };
+
+      resizeSessionRef.current = {
+        cleanup: createNativeInteractionSession(
+          kind,
+          nativeEvent,
+          node,
+          handleMove,
+          handleEnd
+        )
+      };
     },
-    [onResizeHandler, positionParams, x, y, w, h]
+    [
+      isResizable,
+      isStatic,
+      clearResizeSession,
+      positionParams,
+      x,
+      y,
+      w,
+      h,
+      emitResize,
+      transformScale
+    ]
   );
 
-  const handleResize: ReactResizableCallback = useCallback(
-    (e, data) => {
-      const pos = calcGridItemPosition(positionParams, x, y, w, h);
-      const typedData: ResizeCallbackData = {
-        ...data,
-        handle: data.handle as ResizeHandleAxis
-      };
-      onResizeHandler(e, typedData, pos, "onResize");
+  const handleResizePointerDown = useCallback(
+    (handleAxis: ResizeHandleAxis, event: ResizeStartEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      startResizeSession(handleAxis, event.nativeEvent, "pointer");
     },
-    [onResizeHandler, positionParams, x, y, w, h]
+    [startResizeSession]
   );
 
-  const handleResizeStop: ReactResizableCallback = useCallback(
-    (e, data) => {
-      setResizing(false);
-      resizePositionRef.current = { top: 0, left: 0, width: 0, height: 0 };
-      const pos = calcGridItemPosition(positionParams, x, y, w, h);
-      const typedData: ResizeCallbackData = {
-        ...data,
-        handle: data.handle as ResizeHandleAxis
-      };
-      onResizeHandler(e, typedData, pos, "onResizeStop");
+  const handleResizeMouseDown = useCallback(
+    (handleAxis: ResizeHandleAxis, event: ResizeStartEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      startResizeSession(handleAxis, event.nativeEvent, "mouse");
     },
-    [onResizeHandler, positionParams, x, y, w, h]
+    [startResizeSession]
   );
 
-  // ============================================================================
-  // Dropping Item Support
-  // ============================================================================
+  const handleResizeTouchStart = useCallback(
+    (handleAxis: ResizeHandleAxis, event: ResizeStartEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      startResizeSession(handleAxis, event.nativeEvent, "touch");
+    },
+    [startResizeSession]
+  );
 
-  // Dropping Item Support - uses refs to avoid callback dependency changes (#2210)
-  // The effect only depends on droppingPosition and dragging state.
-  // Callbacks are accessed via refs to get the latest version without triggering re-runs.
   useEffect(() => {
-    if (!droppingPosition) return;
+    if (!supportsDndKitDrag) {
+      console.debug("[GridItem] sortable handle effect: disabled", { i });
+      sortableHandleRef(null);
+      return;
+    }
 
     const node = elementRef.current;
-    if (!node) return;
+    if (!node) {
+      console.debug("[GridItem] sortable handle effect: no node", { i, handle });
+      return;
+    }
 
-    const prevDroppingPosition = prevDroppingPositionRef.current || {
+    const handleElement = handle ? node.querySelector(handle) : null;
+    console.debug("[GridItem] sortable handle effect: applied", {
+      i,
+      handle,
+      node: describeElementForDebug(node),
+      handleElement: describeElementForDebug(handleElement)
+    });
+    sortableHandleRef(handleElement instanceof Element ? handleElement : null);
+
+    return () => {
+      console.debug("[GridItem] sortable handle effect: cleanup", { i });
+      sortableHandleRef(null);
+    };
+  }, [supportsDndKitDrag, handle, i, sortableHandleRef]);
+
+  useEffect(() => {
+    if (!supportsDndKitDrag || isDndKitDragSource || resizing) {
+      return;
+    }
+
+    const node = elementRef.current;
+    if (!node) {
+      console.debug("[GridItem] sortable rebind skipped: no node", {
+        i,
+        x,
+        y,
+        w,
+        h,
+        isDndKitDragSource,
+        resizing
+      });
+      return;
+    }
+
+    const handleElement = handle ? node.querySelector(handle) : null;
+    console.debug("[GridItem] sortable rebind after geometry/state change", {
+      i,
+      x,
+      y,
+      w,
+      h,
+      node: describeElementForDebug(node),
+      handle,
+      handleElement: describeElementForDebug(handleElement),
+      isSortableDragSource,
+      isDndKitDragSource,
+      resizing
+    });
+    sortableHandleRef(null);
+    sortableRef(null);
+    sortableRef(node);
+    sortableHandleRef(handleElement instanceof Element ? handleElement : null);
+  }, [
+    h,
+    handle,
+    i,
+    isDndKitDragSource,
+    isSortableDragSource,
+    resizing,
+    sortableHandleRef,
+    sortableRef,
+    supportsDndKitDrag,
+    w,
+    x,
+    y
+  ]);
+
+  useEffect(() => {
+    if (!useNativeDragFallback) {
+      return;
+    }
+
+    const node = elementRef.current;
+    if (!node) {
+      return;
+    }
+
+    if (nativePointerEventsAvailable) {
+      node.addEventListener("pointerdown", handleDragPointerDown);
+    } else {
+      node.addEventListener("mousedown", handleDragMouseDown);
+      node.addEventListener("touchstart", handleDragTouchStart, {
+        passive: false
+      });
+    }
+    return () => {
+      if (nativePointerEventsAvailable) {
+        node.removeEventListener("pointerdown", handleDragPointerDown);
+      } else {
+        node.removeEventListener("mousedown", handleDragMouseDown);
+        node.removeEventListener("touchstart", handleDragTouchStart);
+      }
+    };
+  }, [
+    handleDragPointerDown,
+    handleDragMouseDown,
+    handleDragTouchStart,
+    nativePointerEventsAvailable,
+    useNativeDragFallback
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearDragSession();
+      clearResizeSession();
+    };
+  }, [clearDragSession, clearResizeSession]);
+
+  useEffect(() => {
+    if (!droppingPosition) {
+      return;
+    }
+
+    const node = elementRef.current;
+    if (!node) {
+      return;
+    }
+
+    const prevDroppingPosition = prevDroppingPositionRef.current ?? {
       left: 0,
-      top: 0
+      top: 0,
+      e: droppingPosition.e
     };
 
-    const shouldDrag =
-      dragging &&
-      (droppingPosition.left !== prevDroppingPosition.left ||
-        droppingPosition.top !== prevDroppingPosition.top);
+    const currentSnapshot = createGridItemDndSnapshot(
+      positionParams,
+      { x, y, w, h },
+      droppingPosition,
+      null
+    );
+    const previousSnapshot = createGridItemDndSnapshot(
+      positionParams,
+      { x, y, w, h },
+      prevDroppingPosition,
+      null
+    );
+
+    const nextPosition = {
+      left: currentSnapshot.left,
+      top: currentSnapshot.top
+    };
 
     if (!dragging) {
-      // Start drag - simulate the draggable callback data
-      const fakeData = {
-        node,
-        deltaX: droppingPosition.left,
-        deltaY: droppingPosition.top,
-        lastX: 0,
-        lastY: 0,
-        x: droppingPosition.left,
-        y: droppingPosition.top
-      };
-      // Use ref to get latest callback without dependency
-      onDragStartRef.current?.(
-        droppingPosition.e as unknown as MouseEvent,
-        fakeData
+      emitDragStart(droppingPosition.e, node, nextPosition, true);
+    } else if (
+      currentSnapshot.left !== previousSnapshot.left ||
+      currentSnapshot.top !== previousSnapshot.top
+    ) {
+      const { deltaX, deltaY } = getGridItemPixelDelta(
+        dragPositionRef.current,
+        nextPosition
       );
-    } else if (shouldDrag) {
-      // Continue drag
-      const deltaX = droppingPosition.left - dragPositionRef.current.left;
-      const deltaY = droppingPosition.top - dragPositionRef.current.top;
-
-      const fakeData = {
-        node,
-        deltaX,
-        deltaY,
-        lastX: dragPositionRef.current.left,
-        lastY: dragPositionRef.current.top,
-        x: droppingPosition.left,
-        y: droppingPosition.top
-      };
-      // Use ref to get latest callback without dependency
-      onDragRef.current?.(
-        droppingPosition.e as unknown as MouseEvent,
-        fakeData
-      );
+      emitDragMove(droppingPosition.e, node, deltaX, deltaY);
     }
 
     prevDroppingPositionRef.current = droppingPosition;
-  }, [droppingPosition, dragging, i]);
+  }, [droppingPosition, dragging, emitDragMove, emitDragStart, positionParams, x, y, w, h]);
 
-  // ============================================================================
-  // Render
-  // ============================================================================
-
-  const pos = calcGridItemPosition(
+  const dndSnapshot = createGridItemDndSnapshot(
     positionParams,
-    x,
-    y,
-    w,
-    h,
+    { x, y, w, h },
     dragging ? dragPositionRef.current : null,
     resizing ? resizePositionRef.current : null
   );
+  const pos: Position = {
+    left: dndSnapshot.left,
+    top: dndSnapshot.top,
+    width: dndSnapshot.width,
+    height: dndSnapshot.height
+  };
 
-  const child = React.Children.only(children);
-
-  // Calculate constraints for resizing (#2235)
-  // Visual resize preview should be constrained to minW/maxW/minH/maxH
-  // so users see accurate feedback during resize, not infinite stretching.
-  const colWidth = calcGridColWidth(positionParams);
-  const minConstraints: [number, number] = [
-    calcGridItemWHPx(minW, colWidth, margin[0]),
-    calcGridItemWHPx(minH, rowHeight, margin[1])
-  ];
-  const maxConstraints: [number, number] = [
-    calcGridItemWHPx(maxW, colWidth, margin[0]),
-    calcGridItemWHPx(maxH, rowHeight, margin[1])
-  ];
-
-  // Get child props safely
-  const childProps = (child as ReactElement<Record<string, unknown>>).props;
+  const child = React.Children.only(children) as ReactElement<
+    Record<string, unknown>
+  >;
+  const childProps = child.props;
   const childClassName = childProps["className"] as string | undefined;
   const childStyle = childProps["style"] as CSSProperties | undefined;
+  const childOnPointerDownCapture = childProps[
+    "onPointerDownCapture"
+  ] as React.PointerEventHandler<HTMLElement> | undefined;
+  const childOnMouseDownCapture = childProps[
+    "onMouseDownCapture"
+  ] as React.MouseEventHandler<HTMLElement> | undefined;
+  const childOnClickCapture = childProps[
+    "onClickCapture"
+  ] as React.MouseEventHandler<HTMLElement> | undefined;
+  // Use our own React-state flag (cleared synchronously in handleDndKitDragEnd)
+  // to show/hide the drag source. dnd-kit's isSortableDragSource lags behind
+  // because dragOperation.reset() is async, which would leave the element
+  // permanently invisible (visibility:hidden) after the first drag.
+  const showSortableDragSource = supportsDndKitDrag && isSortableDragSource && isDndKitDragSource;
 
-  // Create the child element with updated props
-  let newChild: ReactElement = React.cloneElement(child, {
-    ref: elementRef,
-    className: clsx("react-grid-item", childClassName, className, {
-      static: isStatic,
-      resizing,
-      "react-draggable": isDraggable,
-      "react-draggable-dragging": dragging,
-      dropping: Boolean(droppingPosition),
-      cssTransforms: useCSSTransforms
-    }),
-    style: {
-      ...style,
-      ...childStyle,
-      ...createStyle(pos)
-    }
-  } as Record<string, unknown>);
-
-  // Wrap with Resizable
-  // Cast resizeHandle to match react-resizable's expected type (string instead of ResizeHandleAxis)
-  const resizableHandle = resizeHandle as
-    | ReactElement
-    | ((axis: string, ref: React.Ref<HTMLElement>) => ReactElement)
-    | undefined;
-
-  newChild = (
-    <Resizable
-      draggableOpts={{ disabled: !isResizable }}
-      className={isResizable ? undefined : "react-resizable-hide"}
-      width={pos.width}
-      height={pos.height}
-      minConstraints={minConstraints}
-      maxConstraints={maxConstraints}
-      onResizeStart={handleResizeStart}
-      onResize={handleResize}
-      onResizeStop={handleResizeStop}
-      transformScale={transformScale}
-      resizeHandles={resizeHandles}
-      handle={resizableHandle}
-    >
-      {newChild}
-    </Resizable>
+  const renderResizeHandle = useCallback(
+    (axis: ResizeHandleAxis) => {
+      return (
+        <GridResizeHandle
+          key={axis}
+          axis={axis}
+          itemId={i}
+          resizeHandle={resizeHandle}
+          supportsDndKitResize={supportsDndKitResize}
+          onPointerDown={
+            useNativeResizeFallback && nativePointerEventsAvailable
+              ? (event) => handleResizePointerDown(axis, event)
+              : undefined
+          }
+          onMouseDown={
+            useNativeResizeFallback && !nativePointerEventsAvailable
+              ? (event) => handleResizeMouseDown(axis, event)
+              : undefined
+          }
+          onTouchStart={
+            useNativeResizeFallback && !nativePointerEventsAvailable
+              ? (event) => handleResizeTouchStart(axis, event)
+              : undefined
+          }
+        />
+      );
+    },
+    [
+      handleResizePointerDown,
+      handleResizeMouseDown,
+      handleResizeTouchStart,
+      i,
+      nativePointerEventsAvailable,
+      resizeHandle,
+      supportsDndKitResize,
+      useNativeResizeFallback
+    ]
   );
 
-  // Wrap with DraggableCore
-  newChild = (
-    <DraggableCore
-      disabled={!isDraggable}
-      onStart={onDragStart}
-      onDrag={onDrag}
-      onStop={onDragStop}
-      handle={handle}
-      cancel={".react-resizable-handle" + (cancel ? "," + cancel : "")}
-      scale={transformScale}
-      nodeRef={elementRef}
-    >
-      {newChild}
-    </DraggableCore>
+  const nextChildren = React.Children.toArray(
+    childProps["children"] as ReactNode
   );
+  if (isResizable && !isStatic) {
+    nextChildren.push(...resolvedResizeHandles.map(renderResizeHandle));
+  }
 
-  return newChild;
+  return React.cloneElement(
+    child,
+    {
+      ref: setElementRef,
+      className: clsx("react-grid-item", childClassName, className, {
+        static: isStatic,
+        resizing,
+        "react-draggable": isDraggable,
+        "react-draggable-dragging": dragging || showSortableDragSource,
+        dropping: Boolean(droppingPosition),
+        cssTransforms: useCSSTransforms,
+        "react-resizable-hide": !isResizable
+      }),
+      onPointerDownCapture: (event: React.PointerEvent<HTMLElement>) => {
+        const node = elementRef.current;
+        console.debug("[GridItem] pointerdown capture", {
+          i,
+          target: describeElementForDebug(event.target),
+          currentTarget: describeElementForDebug(event.currentTarget),
+          node: describeElementForDebug(node),
+          connected: node?.isConnected ?? false,
+          supportsDndKitDrag,
+          isSortableDragSource,
+          isDndKitDragSource,
+          dragging,
+          resizing,
+          handle,
+          cancel,
+          visibility:
+            node && typeof window !== "undefined"
+              ? window.getComputedStyle(node).visibility
+              : undefined,
+          pointerEvents:
+            node && typeof window !== "undefined"
+              ? window.getComputedStyle(node).pointerEvents
+              : undefined
+        });
+        childOnPointerDownCapture?.(event);
+      },
+      onMouseDownCapture: (event: React.MouseEvent<HTMLElement>) => {
+        console.debug("[GridItem] mousedown capture", {
+          i,
+          target: describeElementForDebug(event.target),
+          currentTarget: describeElementForDebug(event.currentTarget),
+          supportsDndKitDrag,
+          isSortableDragSource,
+          isDndKitDragSource,
+          dragging,
+          resizing
+        });
+        childOnMouseDownCapture?.(event);
+      },
+      onClickCapture: (event: React.MouseEvent<HTMLElement>) => {
+        console.debug("[GridItem] click capture", {
+          i,
+          target: describeElementForDebug(event.target),
+          currentTarget: describeElementForDebug(event.currentTarget),
+          supportsDndKitDrag,
+          isSortableDragSource,
+          isDndKitDragSource,
+          dragging,
+          resizing
+        });
+        childOnClickCapture?.(event);
+      },
+      style: {
+        ...style,
+        ...childStyle,
+        ...createStyle(pos),
+        visibility: showSortableDragSource ? "hidden" : childStyle?.visibility,
+        touchAction: isDraggable || isResizable ? "none" : childStyle?.touchAction
+      }
+    } as Record<string, unknown>,
+    ...nextChildren
+  );
 }
 
 export default GridItem;

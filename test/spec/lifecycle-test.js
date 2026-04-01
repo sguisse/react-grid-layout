@@ -9,13 +9,14 @@ import ReactGridLayout from "../../src/legacy/ReactGridLayout";
 import { GridLayout as GridLayoutV2 } from "../../src/react/components/GridLayout";
 import { GridItem } from "../../src/react/components/GridItem";
 import ResponsiveReactGridLayout from "../../src/legacy/ResponsiveReactGridLayout";
+import { setNativeFallbackOverride } from "../../src/react/dnd/runtime";
 import BasicLayout from "../examples/01-basic";
 import ShowcaseLayout from "../examples/00-showcase";
 import DroppableLayout from "../examples/12-drag-from-outside";
 import ResizableLayout from "../examples/17-resizable-handles";
 import deepFreeze from "../util/deepFreeze";
 
-// Helper to dispatch native mouse events (needed for react-draggable/react-resizable)
+// Helper to dispatch native mouse events for document-level drag/resize handling
 function dispatchMouseEvent(node, type, coords = {}) {
   const event = new MouseEvent(type, {
     bubbles: true,
@@ -31,7 +32,7 @@ function dispatchMouseEvent(node, type, coords = {}) {
   return event;
 }
 
-// Helper to simulate mouse movement (for draggable/resizable)
+// Helper to simulate mouse movement for drag/resize interactions
 function mouseMove(x, y, node) {
   const doc = node ? node.ownerDocument : document;
   const mouseEvent = new MouseEvent("mousemove", {
@@ -53,7 +54,7 @@ function simulateDrag(element, fromX, fromY, toX, toY) {
   dispatchMouseEvent(element, "mousedown", { clientX: fromX, clientY: fromY });
   // mousemove on document moves it
   mouseMove(toX, toY, element);
-  // mouseup on document ends the drag (react-draggable listens on document)
+  // mouseup on document ends the drag session
   const mouseUpEvent = new MouseEvent("mouseup", {
     bubbles: true,
     cancelable: true,
@@ -69,6 +70,7 @@ describe("Lifecycle tests", function () {
   // Example layouts use randomness
   let randIdx = 0;
   beforeAll(() => {
+    setNativeFallbackOverride(true);
     const randArr = [0.001, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.999];
     jest.spyOn(global.Math, "random").mockImplementation(() => {
       randIdx = (randIdx + 1) % randArr.length;
@@ -81,6 +83,7 @@ describe("Lifecycle tests", function () {
   });
 
   afterAll(() => {
+    setNativeFallbackOverride(null);
     global.Math.random.mockRestore();
   });
 

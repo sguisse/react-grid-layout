@@ -15,6 +15,7 @@ import {
   type ResponsiveGridLayoutProps,
   type Layout
 } from "../../src/react/index";
+import { setNativeFallbackOverride } from "../../src/react/dnd/runtime";
 
 // Import core utilities to verify they work
 import {
@@ -44,7 +45,42 @@ function dispatchMouseEvent(
   return event;
 }
 
+function dispatchTouchEvent(
+  node: Element,
+  type: string,
+  coords: { clientX?: number; clientY?: number; identifier?: number } = {}
+) {
+  const touch = {
+    identifier: coords.identifier ?? 0,
+    clientX: coords.clientX || 0,
+    clientY: coords.clientY || 0,
+    target: node
+  };
+  const event = new Event(type, {
+    bubbles: true,
+    cancelable: true
+  }) as Event & {
+    touches: typeof touch[];
+    targetTouches: typeof touch[];
+    changedTouches: typeof touch[];
+  };
+
+  event.touches = type === "touchend" ? [] : [touch];
+  event.targetTouches = type === "touchend" ? [] : [touch];
+  event.changedTouches = [touch];
+  node.dispatchEvent(event);
+  return event;
+}
+
 describe("TypeScript Components", () => {
+  beforeAll(() => {
+    setNativeFallbackOverride(true);
+  });
+
+  afterAll(() => {
+    setNativeFallbackOverride(null);
+  });
+
   describe("<GridItem>", () => {
     const mockProps: GridItemProps = {
       children: <div>test child</div>,
@@ -266,6 +302,34 @@ describe("TypeScript Components", () => {
       const gridItem = container.querySelector(".react-grid-item");
       act(() => {
         dispatchMouseEvent(gridItem!, "mousedown", {
+          clientX: 50,
+          clientY: 50
+        });
+      });
+
+      expect(onDragStart).toHaveBeenCalled();
+    });
+
+
+    it("calls onDragStart when touch drag begins", () => {
+      const onDragStart = jest.fn();
+      const { container } = render(
+        <GridLayout
+          className="layout"
+          cols={12}
+          rowHeight={30}
+          width={1200}
+          onDragStart={onDragStart}
+          layout={[{ i: "a", x: 0, y: 0, w: 2, h: 2 }]}
+          dragConfig={{ threshold: 0 }}
+        >
+          <div key="a">a</div>
+        </GridLayout>
+      );
+
+      const gridItem = container.querySelector(".react-grid-item");
+      act(() => {
+        dispatchTouchEvent(gridItem!, "touchstart", {
           clientX: 50,
           clientY: 50
         });
@@ -610,8 +674,8 @@ describe("TypeScript Components", () => {
     // #2235: In v2, visual resize preview should be limited to minW/maxW/minH/maxH
     // just like in v1, rather than allowing infinite stretching.
     //
-    // The fix: GridItem should calculate minConstraints and maxConstraints in pixels
-    // based on the layout item's minW/maxW/minH/maxH props, and pass them to Resizable.
+    // The native GridItem resize path still relies on the same pixel math for its
+    // drag preview and final constrained grid dimensions.
 
     it("should calculate correct pixel constraints from minW/maxW/minH/maxH", () => {
       // Test the core calculation that should happen in GridItem
@@ -649,9 +713,8 @@ describe("TypeScript Components", () => {
       expect(calcGridItemWHPx(Infinity, colWidth, marginX)).toBe(Infinity);
     });
 
-    it("should render GridItem with proper constraints passed to Resizable", () => {
+    it("should render GridItem with resize handles for constrained resizing", () => {
       // Render a GridItem with minW/maxW/minH/maxH and verify it renders
-      // The actual constraint application happens inside react-resizable
       const mockProps: GridItemProps = {
         children: <div>test child</div>,
         cols: 12,
@@ -681,7 +744,7 @@ describe("TypeScript Components", () => {
       const gridItem = container.querySelector(".react-grid-item");
       expect(gridItem).toBeInTheDocument();
 
-      // The resize handle should be present (Resizable adds it)
+      // The native resize handle should be present.
       const resizeHandle = container.querySelector(".react-resizable-handle");
       expect(resizeHandle).toBeInTheDocument();
     });

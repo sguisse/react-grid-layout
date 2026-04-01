@@ -1,0 +1,75 @@
+{
+  "files": [
+    {
+      "file": "src/react/hooks/useGridLayout.ts",
+      "props": [
+        "options"
+      ],
+      "state": {
+        "logical": [
+          "layout",
+          "dropState"
+        ],
+        "visual": [
+          "dragState",
+          "resizeState"
+        ]
+      },
+      "pureFunctions": [
+        "useGridLayout"
+      ],
+      "antiPatterns": [],
+      "externalDeps": [
+        "react",
+        "fast-equals",
+        "../../core/types.js",
+        "../../core/layout.js",
+        "../../core/compactors.js"
+      ]
+    },
+    {
+      "file": "src/react/hooks/useResponsiveLayout.ts",
+      "props": [
+        "options"
+      ],
+      "state": {
+        "logical": [
+          "breakpoint",
+          "cols",
+          "layouts"
+        ],
+        "visual": []
+      },
+      "pureFunctions": [
+        "useResponsiveLayout"
+      ],
+      "antiPatterns": [],
+      "externalDeps": [
+        "react",
+        "fast-equals",
+        "../../core/types.js",
+        "../../core/layout.js",
+        "../../core/responsive.js",
+        "../../core/compactors.js"
+      ]
+    },
+    {
+      "file": "src/react/hooks/useContainerWidth.ts",
+      "props": [
+        "options"
+      ],
+      "state": {
+        "logical": [
+          "width",
+          "mounted"
+        ],
+        "visual": []
+      },
+      "pureFunctions": [],
+      "antiPatterns": [],
+      "externalDeps": [
+        "react"
+      ]
+    }
+  ]
+}

@@ -35,6 +35,26 @@ import { collides } from "./collision.js";
  * @param axis - Which axis to move on ('x' or 'y')
  * @param hasStatics - Whether layout contains static items (disables early break optimization)
  */
+export function getCompactionTarget(
+  item: LayoutItem,
+  collision: LayoutItem,
+  axis: "x" | "y"
+): number {
+  void item;
+  return axis === "x" ? collision.x + collision.w : collision.y + collision.h;
+}
+
+export function projectCompactionItem(
+  item: LayoutItem,
+  moveToCoord: number,
+  axis: "x" | "y"
+): Pick<LayoutItem, "i" | "x" | "y" | "w" | "h"> {
+  if (axis === "x") {
+    return { i: item.i, x: moveToCoord, y: item.y, w: item.w, h: item.h };
+  }
+  return { i: item.i, x: item.x, y: moveToCoord, w: item.w, h: item.h };
+}
+
 export function resolveCompactionCollision(
   layout: Layout,
   item: LayoutItem,
@@ -42,15 +62,19 @@ export function resolveCompactionCollision(
   axis: "x" | "y",
   hasStatics?: boolean
 ): void {
-  const sizeProp = axis === "x" ? "w" : "h";
-
   // Temporarily increment position to check for collisions
   (item as Mutable<LayoutItem>)[axis] += 1;
 
-  const itemIndex = layout.findIndex(l => l.i === item.i);
+  const itemIndex = layout.findIndex((l) => l.i === item.i);
 
   // Calculate hasStatics once if not provided (for backwards compat)
   const layoutHasStatics = hasStatics ?? getStatics(layout).length > 0;
+  const projectedItem = projectCompactionItem(item, moveToCoord, axis);
+  const projectedTarget = getCompactionTarget(
+    item,
+    projectedItem as LayoutItem,
+    axis
+  );
 
   for (let i = itemIndex + 1; i < layout.length; i++) {
     const otherItem = layout[i];
@@ -65,7 +89,7 @@ export function resolveCompactionCollision(
       resolveCompactionCollision(
         layout,
         otherItem,
-        moveToCoord + item[sizeProp],
+        projectedTarget,
         axis,
         layoutHasStatics
       );

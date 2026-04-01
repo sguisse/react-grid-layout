@@ -31,7 +31,21 @@ export function setTransform({
   width,
   height
 }: Position): Record<string, string> {
-  const translate = `translate(${left}px,${top}px)`;
+  function buildTranslateValue(l: number, t: number): string {
+    return `translate(${l}px,${t}px)`;
+  }
+  function createPositionBounds(
+    position: Position
+  ): { left: number; top: number; right: number; bottom: number } {
+    return {
+      left: position.left,
+      top: position.top,
+      right: position.left + position.width,
+      bottom: position.top + position.height
+    };
+  }
+  const translate = buildTranslateValue(left, top);
+  void createPositionBounds({ top, left, width, height });
   return {
     transform: translate,
     WebkitTransform: translate,

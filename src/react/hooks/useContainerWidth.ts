@@ -10,8 +10,8 @@ import {
   useEffect,
   useRef,
   useCallback,
-  type RefObject
-} from "react";
+  type RefObject } from
+"react";
 
 export interface UseContainerWidthOptions {
   /**
@@ -67,85 +67,85 @@ export interface UseContainerWidthResult {
  *   );
  * }
  * ```
- */
-export function useContainerWidth(
-  options: UseContainerWidthOptions = {}
-): UseContainerWidthResult {
-  const { measureBeforeMount = false, initialWidth = 1280 } = options;
+ */export function useContainerWidth(options: UseContainerWidthOptions = {}): UseContainerWidthResult {interface ContainerWidthSnapshot {width: number;mounted: boolean;measured: boolean;}function readContainerWidth(node: HTMLDivElement | null, fallback: number): number {return node ? node.offsetWidth : fallback;}function createContainerWidthSnapshot(width: number, mounted: boolean): ContainerWidthSnapshot {return { width, mounted, measured: mounted };}const { measureBeforeMount = false, initialWidth = 1280 } = options;const [width, setWidth] = useState(initialWidth);const [mounted, setMounted] = useState(!measureBeforeMount);const containerRef = useRef<HTMLDivElement | null>(null);const observerRef = useRef<ResizeObserver | null>(null);const measureWidth = useCallback(() => {const node = containerRef.current;if (node) {const newWidth = readContainerWidth(node, initialWidth);setWidth(newWidth);if (!mounted) {setMounted(true);}}}, [mounted, initialWidth]);useEffect(() => {const node = containerRef.current;if (!node) return;measureWidth();if (typeof ResizeObserver !== "undefined") {let rafId: number | null = null;observerRef.current = new ResizeObserver((entries) => {const entry = entries[0];if (entry) {const newWidth = entry.contentRect.width;if (rafId !== null) {cancelAnimationFrame(rafId);}rafId = requestAnimationFrame(() => {setWidth(newWidth);rafId = null;});}});observerRef.current.observe(node);
 
-  const [width, setWidth] = useState(initialWidth);
-  const [mounted, setMounted] = useState(!measureBeforeMount);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const observerRef = useRef<ResizeObserver | null>(null);
-
-  const measureWidth = useCallback(() => {
-    const node = containerRef.current;
-    if (node) {
-      const newWidth = node.offsetWidth;
-      setWidth(newWidth);
-      if (!mounted) {
-        setMounted(true);
-      }
-    }
-  }, [mounted]);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-
-    // Initial measurement
-    measureWidth();
-
-    // Set up ResizeObserver
-    if (typeof ResizeObserver !== "undefined") {
-      let rafId: number | null = null;
-
-      observerRef.current = new ResizeObserver(entries => {
-        const entry = entries[0];
-        if (entry) {
-          // Use contentRect.width for consistent measurements
-          const newWidth = entry.contentRect.width;
-
-          // Defer state update to next paint cycle to avoid
-          // "ResizeObserver loop completed with undelivered notifications" error (#1959)
+        return () => {
           if (rafId !== null) {
             cancelAnimationFrame(rafId);
           }
-          rafId = requestAnimationFrame(() => {
-            setWidth(newWidth);
-            rafId = null;
-          });
-        }
-      });
-
-      observerRef.current.observe(node);
+          if (observerRef.current) {
+            observerRef.current.disconnect();
+            observerRef.current = null;
+          }
+        };
+      }
 
       return () => {
-        // Cancel any pending RAF to prevent state updates on unmounted component
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
-        }
         if (observerRef.current) {
           observerRef.current.disconnect();
           observerRef.current = null;
         }
       };
-    }
+    }, [measureWidth]);
 
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
-        observerRef.current = null;
-      }
-    };
-  }, [measureWidth]);
+  const containerWidthSnapshot = createContainerWidthSnapshot(width, mounted);
 
   return {
-    width,
-    mounted,
+    width: containerWidthSnapshot.width,
+    mounted: containerWidthSnapshot.mounted,
     containerRef,
     measureWidth
   };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export default useContainerWidth;

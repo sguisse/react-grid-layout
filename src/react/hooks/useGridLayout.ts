@@ -7,6 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { deepEqual } from "fast-equals";
+
 import type {
   Layout,
   LayoutItem,
@@ -24,68 +25,43 @@ import {
 } from "../../core/layout.js";
 import { verticalCompactor } from "../../core/compactors.js";
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface DragState {
-  /** Currently dragging item placeholder */
   activeDrag: LayoutItem | null;
-  /** Original item before drag started */
   oldDragItem: LayoutItem | null;
-  /** Layout before drag started */
   oldLayout: Layout | null;
 }
 
 export interface ResizeState {
-  /** Whether a resize is in progress */
   resizing: boolean;
-  /** Original item before resize started */
   oldResizeItem: LayoutItem | null;
-  /** Layout before resize started */
   oldLayout: Layout | null;
 }
 
 export interface DropState {
-  /** DOM node for the dropping placeholder */
   droppingDOMNode: React.ReactElement | null;
-  /** Current drop position */
   droppingPosition: DroppingPosition | null;
 }
 
 export interface UseGridLayoutOptions {
-  /** Initial layout */
   layout: Layout;
-  /** Number of columns */
   cols: number;
-  /** Prevent collisions when moving items */
   preventCollision?: boolean;
-  /** Called when layout changes */
   onLayoutChange?: (layout: Layout) => void;
-  /** Compactor for layout compaction (default: verticalCompactor) */
   compactor?: Compactor;
+  droppingItemId?: string;
 }
 
 export interface UseGridLayoutResult {
-  /** Current layout */
   layout: Layout;
-  /** Set layout directly */
   setLayout: (layout: Layout) => void;
-  /** Drag state */
   dragState: DragState;
-  /** Resize state */
   resizeState: ResizeState;
-  /** Drop state */
   dropState: DropState;
-  /** Start dragging an item */
   onDragStart: (itemId: string, x: number, y: number) => LayoutItem | null;
-  /** Update drag position */
   onDrag: (itemId: string, x: number, y: number) => void;
-  /** Stop dragging */
   onDragStop: (itemId: string, x: number, y: number) => void;
-  /** Start resizing an item */
+  cancelDrag: () => void;
   onResizeStart: (itemId: string) => LayoutItem | null;
-  /** Update resize dimensions */
   onResize: (
     itemId: string,
     w: number,
@@ -93,63 +69,48 @@ export interface UseGridLayoutResult {
     x?: number,
     y?: number
   ) => void;
-  /** Stop resizing */
-  onResizeStop: (itemId: string, w: number, h: number) => void;
-  /** Start dropping (external drag-in) */
-  onDropDragOver: (
-    droppingItem: LayoutItem,
-    position: DroppingPosition
+  onResizeStop: (
+    itemId: string,
+    w: number,
+    h: number,
+    x?: number,
+    y?: number
   ) => void;
-  /** Update drop position */
+  cancelResize: () => void;
+  onDropDragOver: (droppingItem: LayoutItem, position: DroppingPosition) => void;
   onDropDragLeave: () => void;
-  /** Complete drop */
   onDrop: (droppingItem: LayoutItem) => void;
-  /** Container height in rows */
   containerHeight: number;
-  /** Whether any drag/resize is active */
   isInteracting: boolean;
-  /** Get the compactor being used */
   compactor: Compactor;
 }
 
-// ============================================================================
-// Hook Implementation
-// ============================================================================
+interface GridLayoutInteractionSnapshot {
+  isDragging: boolean;
+  isResizing: boolean;
+  isDropping: boolean;
+  isInteracting: boolean;
+  activeDragId: string | null;
+}
 
-/**
- * Hook for managing grid layout state.
- *
- * Handles all layout state including drag, resize, and drop operations.
- * Uses immutable updates and provides callbacks for all interactions.
- *
- * @example
- * ```tsx
- * function MyGrid() {
- *   const {
- *     layout,
- *     onDragStart,
- *     onDrag,
- *     onDragStop,
- *     containerHeight
- *   } = useGridLayout({
- *     layout: initialLayout,
- *     cols: 12
- *   });
- *
- *   return (
- *     <div style={{ height: containerHeight }}>
- *       {layout.map(item => (
- *         <GridItem
- *           key={item.i}
- *           {...item}
- *           onDragStart={() => onDragStart(item.i, item.x, item.y)}
- *         />
- *       ))}
- *     </div>
- *   );
- * }
- * ```
- */
+function createGridLayoutInteractionSnapshot(
+  dragState: DragState,
+  resizeState: ResizeState,
+  dropState: DropState
+): GridLayoutInteractionSnapshot {
+  const isDragging = dragState.activeDrag !== null;
+  const isResizing = resizeState.resizing;
+  const isDropping = dropState.droppingPosition !== null;
+
+  return {
+    isDragging,
+    isResizing,
+    isDropping,
+    isInteracting: isDragging || isResizing || isDropping,
+    activeDragId: dragState.activeDrag?.i ?? null
+  };
+}
+
 export function useGridLayout(
   options: UseGridLayoutOptions
 ): UseGridLayoutResult {
@@ -158,42 +119,33 @@ export function useGridLayout(
     cols,
     preventCollision = false,
     onLayoutChange,
-    compactor = verticalCompactor
+    compactor = verticalCompactor,
+    droppingItemId = "__dropping-elem__"
   } = options;
 
-  // Track if we're currently dragging to block prop updates
   const isDraggingRef = useRef(false);
 
-  // Initialize layout with compaction using the compactor
   const [layout, setLayoutState] = useState<Layout>(() => {
     const corrected = correctBounds(cloneLayout(propsLayout), { cols });
     return compactor.compact(corrected, cols);
   });
 
-  // Drag state
   const [dragState, setDragState] = useState<DragState>({
     activeDrag: null,
     oldDragItem: null,
     oldLayout: null
   });
-
-  // Resize state
   const [resizeState, setResizeState] = useState<ResizeState>({
     resizing: false,
     oldResizeItem: null,
     oldLayout: null
   });
-
-  // Drop state
   const [dropState, setDropState] = useState<DropState>({
     droppingDOMNode: null,
     droppingPosition: null
   });
-
-  // Track previous layout for change detection
   const prevLayoutRef = useRef<Layout>(layout);
 
-  // Set layout with optional compaction - use compactor.compact() (#2213)
   const setLayout = useCallback(
     (newLayout: Layout) => {
       const corrected = correctBounds(cloneLayout(newLayout), { cols });
@@ -203,34 +155,34 @@ export function useGridLayout(
     [cols, compactor]
   );
 
-  // Sync layout from props when not dragging
   useEffect(() => {
-    if (isDraggingRef.current) return;
+    if (isDraggingRef.current) {
+      return;
+    }
 
     if (!deepEqual(propsLayout, prevLayoutRef.current)) {
       setLayout(propsLayout);
     }
   }, [propsLayout, setLayout]);
 
-  // Notify layout changes
   useEffect(() => {
     if (!deepEqual(layout, prevLayoutRef.current)) {
       prevLayoutRef.current = layout;
-      onLayoutChange?.(layout);
-    }
-  }, [layout, onLayoutChange]);
 
-  // ============================================================================
-  // Drag Handlers
-  // ============================================================================
+      if (!layout.some((item) => item.i === droppingItemId)) {
+        onLayoutChange?.(layout);
+      }
+    }
+  }, [layout, onLayoutChange, droppingItemId]);
 
   const onDragStart = useCallback(
     (itemId: string, x: number, y: number): LayoutItem | null => {
       const item = getLayoutItem(layout, itemId);
-      if (!item) return null;
+      if (!item) {
+        return null;
+      }
 
       isDraggingRef.current = true;
-
       const placeholder: LayoutItem = {
         ...cloneLayoutItem(item),
         x,
@@ -252,42 +204,18 @@ export function useGridLayout(
 
   const onDrag = useCallback(
     (itemId: string, x: number, y: number) => {
+      console.debug('[useGridLayout] onDrag received', { itemId, x, y });
       const item = getLayoutItem(layout, itemId);
-      if (!item) return;
+      if (!item) {
+        console.debug('[useGridLayout] onDrag: item not found', itemId);
+        return;
+      }
 
-      // Update placeholder position
-      setDragState(prev => ({
+      setDragState((prev) => ({
         ...prev,
         activeDrag: prev.activeDrag ? { ...prev.activeDrag, x, y } : null
       }));
 
-      // Move element and update layout
-      const newLayout = moveElement(
-        layout,
-        item,
-        x,
-        y,
-        true, // isUserAction
-        preventCollision,
-        compactor.type,
-        cols,
-        compactor.allowOverlap
-      );
-
-      // Compact layout - use compactor.compact() (#2213)
-      const compacted = compactor.compact(newLayout, cols);
-
-      setLayoutState(compacted);
-    },
-    [layout, cols, compactor, preventCollision]
-  );
-
-  const onDragStop = useCallback(
-    (itemId: string, x: number, y: number) => {
-      const item = getLayoutItem(layout, itemId);
-      if (!item) return;
-
-      // Final move
       const newLayout = moveElement(
         layout,
         item,
@@ -299,31 +227,60 @@ export function useGridLayout(
         cols,
         compactor.allowOverlap
       );
+      console.debug('[useGridLayout] onDrag: moveElement computed', { itemId, x, y });
+      const compacted = compactor.compact(newLayout, cols);
+      setLayoutState(compacted);
+      console.debug('[useGridLayout] onDrag: setLayoutState applied', { length: compacted.length });
+    },
+    [layout, cols, compactor, preventCollision]
+  );
 
-      // Compact and finalize - use compactor.compact() (#2213)
+  const onDragStop = useCallback(
+    (itemId: string, x: number, y: number) => {
+      const item = getLayoutItem(layout, itemId);
+      if (!item) {
+        return;
+      }
+
+      const newLayout = moveElement(
+        layout,
+        item,
+        x,
+        y,
+        true,
+        preventCollision,
+        compactor.type,
+        cols,
+        compactor.allowOverlap
+      );
       const compacted = compactor.compact(newLayout, cols);
 
       isDraggingRef.current = false;
-
-      setDragState({
-        activeDrag: null,
-        oldDragItem: null,
-        oldLayout: null
-      });
-
+      setDragState({ activeDrag: null, oldDragItem: null, oldLayout: null });
       setLayoutState(compacted);
     },
     [layout, cols, compactor, preventCollision]
   );
 
-  // ============================================================================
-  // Resize Handlers
-  // ============================================================================
+  const cancelDrag = useCallback(() => {
+    isDraggingRef.current = false;
+    setDragState((prev) => {
+      if (prev.oldLayout) {
+        const corrected = correctBounds(cloneLayout(prev.oldLayout), { cols });
+        const compacted = compactor.compact(corrected, cols);
+        setLayoutState(compacted);
+      }
+
+      return { activeDrag: null, oldDragItem: null, oldLayout: null };
+    });
+  }, [cols, compactor]);
 
   const onResizeStart = useCallback(
     (itemId: string): LayoutItem | null => {
       const item = getLayoutItem(layout, itemId);
-      if (!item) return null;
+      if (!item) {
+        return null;
+      }
 
       setResizeState({
         resizing: true,
@@ -338,116 +295,135 @@ export function useGridLayout(
 
   const onResize = useCallback(
     (itemId: string, w: number, h: number, x?: number, y?: number) => {
-      const newLayout = layout.map(item => {
-        if (item.i === itemId) {
-          const updated: LayoutItem = {
-            ...item,
-            w,
-            h
-          };
-          if (x !== undefined) (updated as Mutable<LayoutItem>).x = x;
-          if (y !== undefined) (updated as Mutable<LayoutItem>).y = y;
-          return updated;
+      const newLayout = layout.map((item) => {
+        if (item.i !== itemId) {
+          return item;
         }
-        return item;
+
+        const updated: Mutable<LayoutItem> = {
+          ...item,
+          w,
+          h
+        };
+        if (x !== undefined) {
+          updated.x = x;
+        }
+        if (y !== undefined) {
+          updated.y = y;
+        }
+        return updated;
       });
 
-      // Correct bounds and compact - use compactor.compact() (#2213)
       const corrected = correctBounds(newLayout, { cols });
       const compacted = compactor.compact(corrected, cols);
+      const activeResizeItem = getLayoutItem(compacted, itemId);
 
       setLayoutState(compacted);
+      setDragState((prev) => ({
+        ...prev,
+        activeDrag: activeResizeItem ? cloneLayoutItem(activeResizeItem) : prev.activeDrag
+      }));
     },
     [layout, cols, compactor]
   );
 
   const onResizeStop = useCallback(
-    (itemId: string, w: number, h: number) => {
-      // Apply final resize
-      onResize(itemId, w, h);
+    (itemId: string, w: number, h: number, x?: number, y?: number) => {
+      onResize(itemId, w, h, x, y);
 
       setResizeState({
         resizing: false,
         oldResizeItem: null,
         oldLayout: null
       });
+      setDragState({ activeDrag: null, oldDragItem: null, oldLayout: null });
     },
     [onResize]
   );
 
-  // ============================================================================
-  // Drop Handlers
-  // ============================================================================
-
-  const onDropDragOver = useCallback(
-    (droppingItem: LayoutItem, position: DroppingPosition) => {
-      // Check if item already exists in layout
-      const existingItem = getLayoutItem(layout, droppingItem.i);
-
-      if (!existingItem) {
-        // Add dropping item to layout - use compactor.compact() (#2213)
-        const newLayout = [...layout, droppingItem];
-        const corrected = correctBounds(newLayout, { cols });
+  const cancelResize = useCallback(() => {
+    setResizeState((prev) => {
+      if (prev.oldLayout) {
+        const corrected = correctBounds(cloneLayout(prev.oldLayout), { cols });
         const compacted = compactor.compact(corrected, cols);
         setLayoutState(compacted);
       }
 
+      return {
+        resizing: false,
+        oldResizeItem: null,
+        oldLayout: null
+      };
+    });
+    setDragState({ activeDrag: null, oldDragItem: null, oldLayout: null });
+  }, [cols, compactor]);
+
+  const onDropDragOver = useCallback(
+    (droppingItem: LayoutItem, position: DroppingPosition) => {
+      const existingItem = getLayoutItem(layout, droppingItem.i);
+
+      isDraggingRef.current = true;
+      if (!existingItem) {
+        const newLayout = [...layout, droppingItem];
+        const corrected = correctBounds(newLayout, { cols });
+        setLayoutState(corrected);
+      }
+
       setDropState({
-        droppingDOMNode: null, // Will be set by component
+        droppingDOMNode: null,
         droppingPosition: position
       });
     },
-    [layout, cols, compactor]
+    [layout, cols]
   );
 
   const onDropDragLeave = useCallback(() => {
-    // Remove dropping placeholder from layout
-    const newLayout = layout.filter(item => item.i !== "__dropping-elem__");
-    setLayoutState(newLayout);
-
+    const newLayout = layout.filter((item) => item.i !== droppingItemId);
+    setLayout(newLayout);
+    isDraggingRef.current = false;
+    setDragState({ activeDrag: null, oldDragItem: null, oldLayout: null });
+    setResizeState((prev) => ({
+      ...prev,
+      resizing: false
+    }));
     setDropState({
       droppingDOMNode: null,
       droppingPosition: null
     });
-  }, [layout]);
+  }, [layout, droppingItemId, setLayout]);
 
   const onDrop = useCallback(
     (droppingItem: LayoutItem) => {
-      // Replace placeholder with actual item
-      const newLayout = layout.map(item => {
-        if (item.i === "__dropping-elem__") {
-          return {
-            ...item,
-            i: droppingItem.i,
-            static: false
-          };
+      const newLayout = layout.map((item) => {
+        if (item.i !== droppingItemId) {
+          return item;
         }
-        return item;
+
+        return {
+          ...item,
+          i: droppingItem.i,
+          static: false
+        };
       });
 
-      // Use compactor.compact() (#2213)
       const corrected = correctBounds(newLayout, { cols });
       const compacted = compactor.compact(corrected, cols);
       setLayoutState(compacted);
-
+      isDraggingRef.current = false;
+      setDragState({ activeDrag: null, oldDragItem: null, oldLayout: null });
       setDropState({
         droppingDOMNode: null,
         droppingPosition: null
       });
     },
-    [layout, cols, compactor]
+    [layout, droppingItemId, cols, compactor]
   );
 
-  // ============================================================================
-  // Computed Values
-  // ============================================================================
-
   const containerHeight = useMemo(() => bottom(layout), [layout]);
-
-  const isInteracting =
-    dragState.activeDrag !== null ||
-    resizeState.resizing ||
-    dropState.droppingPosition !== null;
+  const interactionSnapshot = useMemo(
+    () => createGridLayoutInteractionSnapshot(dragState, resizeState, dropState),
+    [dragState, resizeState, dropState]
+  );
 
   return {
     layout,
@@ -458,14 +434,16 @@ export function useGridLayout(
     onDragStart,
     onDrag,
     onDragStop,
+    cancelDrag,
     onResizeStart,
     onResize,
     onResizeStop,
+    cancelResize,
     onDropDragOver,
     onDropDragLeave,
     onDrop,
     containerHeight,
-    isInteracting,
+    isInteracting: interactionSnapshot.isInteracting,
     compactor
   };
 }

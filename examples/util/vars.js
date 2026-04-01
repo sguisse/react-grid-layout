@@ -193,4 +193,12 @@ module.exports = [
         "top-half positioning, and snap-to-grid."
     ]
   },
+  {
+    title: "Cross-Grid Transfer",
+    source: "cross-grid-transfer",
+    paragraphs: [
+      "This demo shows two GridLayout instances on the same page.",
+      "Drag the <code>Move</code> chip on a card to transfer it from one grid into the other while preserving normal in-grid drag and resize behavior."
+    ]
+  },
 ];

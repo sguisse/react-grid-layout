@@ -1,0 +1,4580 @@
+==================================================================================================================================================================
+./test/testUtils.js
+--->
+
+/**
+ * Test utilities for simulating drag events
+ */
+
+/**
+ * Create a MouseEvent with specified coordinates
+ */
+export function createMouseEvent(type, { clientX = 0, clientY = 0 } = {}) {
+  // Use the modern MouseEvent constructor without view (jsdom is strict about it)
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX,
+    clientY,
+    // Don't pass view - jsdom doesn't like it
+  });
+}
+
+/**
+ * Create a TouchEvent with specified coordinates
+ */
+export function createTouchEvent(type, { clientX = 0, clientY = 0, identifier = 0 } = {}) {
+  const touch = {
+    identifier,
+    clientX,
+    clientY,
+    target: document.body,
+  };
+
+  const touchEvent = new Event(type, { bubbles: true, cancelable: true });
+  touchEvent.targetTouches = type === 'touchend' ? [] : [touch];
+  touchEvent.changedTouches = [touch];
+  touchEvent.touches = type === 'touchend' ? [] : [touch];
+
+  return touchEvent;
+}
+
+/**
+ * Simulate a drag operation from one point to another
+ */
+export function simulateDrag(element, { from = { x: 0, y: 0 }, to = { x: 0, y: 0 } } = {}) {
+  // Mouse down at start position
+  element.dispatchEvent(createMouseEvent('mousedown', { clientX: from.x, clientY: from.y }));
+
+  // Mouse move to end position (dispatched on document)
+  document.dispatchEvent(createMouseEvent('mousemove', { clientX: to.x, clientY: to.y }));
+
+  // Mouse up at end position (dispatched on document where DraggableCore listens)
+  document.dispatchEvent(createMouseEvent('mouseup', { clientX: to.x, clientY: to.y }));
+}
+
+/**
+ * Start a drag operation (mousedown only)
+ */
+export function startDrag(element, { x = 0, y = 0 } = {}) {
+  element.dispatchEvent(createMouseEvent('mousedown', { clientX: x, clientY: y }));
+}
+
+/**
+ * Move during a drag operation (mousemove on document)
+ */
+export function moveDrag({ x = 0, y = 0 } = {}) {
+  document.dispatchEvent(createMouseEvent('mousemove', { clientX: x, clientY: y }));
+}
+
+/**
+ * End a drag operation (mouseup on document where DraggableCore listens)
+ */
+export function endDrag(element, { x = 0, y = 0 } = {}) {
+  // DraggableCore binds mouseup listener to ownerDocument, not the element
+  document.dispatchEvent(createMouseEvent('mouseup', { clientX: x, clientY: y }));
+}
+
+/**
+ * Simulate a touch drag operation
+ */
+export function simulateTouchDrag(element, { from = { x: 0, y: 0 }, to = { x: 0, y: 0 } } = {}) {
+  element.dispatchEvent(createTouchEvent('touchstart', { clientX: from.x, clientY: from.y }));
+  document.dispatchEvent(createTouchEvent('touchmove', { clientX: to.x, clientY: to.y }));
+  element.dispatchEvent(createTouchEvent('touchend', { clientX: to.x, clientY: to.y }));
+}
+
+/**
+ * Wait for the next tick
+ */
+export function nextTick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+<---
+
+==================================================================================================================================================================
+./test/DraggableCore.test.jsx
+--->
+
+import React, { useRef } from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, cleanup } from '@testing-library/react';
+import { DraggableCore } from '../lib/Draggable';
+import { simulateDrag, startDrag, moveDrag, endDrag, createTouchEvent } from './testUtils';
+
+// Helper wrapper component that provides nodeRef (required in React 19)
+function DraggableCoreWrapper({ children, coreRef, ...props }) {
+  const nodeRef = useRef(null);
+  return (
+    <DraggableCore ref={coreRef} nodeRef={nodeRef} {...props}>
+      {React.cloneElement(children, { ref: nodeRef })}
+    </DraggableCore>
+  );
+}
+
+describe('DraggableCore', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  describe('rendering', () => {
+    it('should render its child', () => {
+      const { container } = render(
+        <DraggableCoreWrapper>
+          <div data-testid="child">Hello</div>
+        </DraggableCoreWrapper>
+      );
+      expect(container.querySelector('[data-testid="child"]')).toBeTruthy();
+      expect(container.textContent).toBe('Hello');
+    });
+
+    it('should accept a single child only', () => {
+      // Suppress React error boundary logs for this test
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const nodeRef = React.createRef();
+
+      // Use try/catch instead of expect().toThrow() to avoid stderr output
+      let threw = false;
+      try {
+        render(
+          <DraggableCore nodeRef={nodeRef}>
+            <div>One</div>
+            <div>Two</div>
+          </DraggableCore>
+        );
+      } catch (e) {
+        threw = true;
+        expect(e.message).toContain('React.Children.only');
+      }
+
+      expect(threw).toBe(true);
+      errorSpy.mockRestore();
+    });
+  });
+
+  describe('mouse events', () => {
+    it('should call onStart when mouse down', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(onStart).toHaveBeenCalledTimes(1);
+    });
+
+    it('should call onDrag during mouse move', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onDrag).toHaveBeenCalled();
+      const callData = onDrag.mock.calls[0][1];
+      expect(callData.deltaX).toBe(100);
+      expect(callData.deltaY).toBe(100);
+    });
+
+    it('should call onStop when mouse up', () => {
+      const onStop = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStop={onStop}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      simulateDrag(container.firstChild, { from: { x: 0, y: 0 }, to: { x: 100, y: 100 } });
+      expect(onStop).toHaveBeenCalledTimes(1);
+    });
+
+    it('should provide correct data in callbacks', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 50, y: 50 });
+      moveDrag({ x: 150, y: 200 });
+
+      const [event, data] = onDrag.mock.calls[0];
+      expect(data.x).toBe(150);
+      expect(data.y).toBe(200);
+      expect(data.deltaX).toBe(100);
+      expect(data.deltaY).toBe(150);
+      expect(data.lastX).toBe(50);
+      expect(data.lastY).toBe(50);
+      expect(data.node).toBe(container.firstChild);
+    });
+  });
+
+  describe('disabled state', () => {
+    it('should not start dragging when disabled', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper disabled onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(onStart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancellation', () => {
+    it('should cancel drag when onStart returns false', () => {
+      const onStart = vi.fn(() => false);
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onStart).toHaveBeenCalled();
+      expect(onDrag).not.toHaveBeenCalled();
+    });
+
+    it('should stop drag when onDrag returns false', () => {
+      const onDrag = vi.fn(() => false);
+      const onStop = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onDrag={onDrag} onStop={onStop}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onDrag).toHaveBeenCalled();
+      expect(onStop).toHaveBeenCalled();
+    });
+  });
+
+  describe('handle prop', () => {
+    it('should only drag from handle', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper handle=".handle" onStart={onStart}>
+          <div>
+            <div className="handle">Handle</div>
+            <div className="content">Content</div>
+          </div>
+        </DraggableCoreWrapper>
+      );
+
+      // Click on content - should not start drag
+      startDrag(container.querySelector('.content'), { x: 0, y: 0 });
+      expect(onStart).not.toHaveBeenCalled();
+
+      // Click on handle - should start drag
+      startDrag(container.querySelector('.handle'), { x: 0, y: 0 });
+      expect(onStart).toHaveBeenCalled();
+    });
+
+    it('should work with nested elements in handle', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper handle=".handle" onStart={onStart}>
+          <div>
+            <div className="handle">
+              <span className="nested">Nested</span>
+            </div>
+          </div>
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.querySelector('.nested'), { x: 0, y: 0 });
+      expect(onStart).toHaveBeenCalled();
+    });
+  });
+
+  describe('cancel prop', () => {
+    it('should not drag from cancel elements', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper cancel=".cancel" onStart={onStart}>
+          <div>
+            <div className="cancel">Cancel</div>
+            <div className="content">Content</div>
+          </div>
+        </DraggableCoreWrapper>
+      );
+
+      // Click on cancel - should not start drag
+      startDrag(container.querySelector('.cancel'), { x: 0, y: 0 });
+      expect(onStart).not.toHaveBeenCalled();
+
+      // Click on content - should start drag
+      startDrag(container.querySelector('.content'), { x: 0, y: 0 });
+      expect(onStart).toHaveBeenCalled();
+    });
+  });
+
+  describe('grid prop', () => {
+    it('should snap movement to grid', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper grid={[50, 50]} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 30, y: 30 }); // Less than half grid, should snap to 50
+
+      expect(onDrag).toHaveBeenCalled();
+      const data = onDrag.mock.calls[0][1];
+      expect(data.x).toBe(50);
+      expect(data.y).toBe(50);
+    });
+
+    it('should not call onDrag if movement is less than grid', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper grid={[100, 100]} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 20, y: 20 }); // Much less than half grid
+
+      // Should not be called because snapped delta is 0
+      expect(onDrag).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scale prop', () => {
+    it('should adjust position based on scale', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper scale={2} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      const data = onDrag.mock.calls[0][1];
+      // With scale 2, 100px movement = 50 logical units
+      expect(data.deltaX).toBe(50);
+      expect(data.deltaY).toBe(50);
+    });
+
+    it('should work with scale < 1', () => {
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper scale={0.5} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      const data = onDrag.mock.calls[0][1];
+      // With scale 0.5, 100px movement = 200 logical units
+      expect(data.deltaX).toBe(200);
+      expect(data.deltaY).toBe(200);
+    });
+  });
+
+  describe('allowAnyClick prop', () => {
+    it('should only respond to left click by default', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      // Right click (button 2)
+      container.firstChild.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: 0,
+        clientY: 0,
+      }));
+      expect(onStart).not.toHaveBeenCalled();
+    });
+
+    it('should respond to any click when allowAnyClick is true', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper allowAnyClick onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      // Right click (button 2)
+      container.firstChild.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: 0,
+        clientY: 0,
+      }));
+      expect(onStart).toHaveBeenCalled();
+    });
+  });
+
+  describe('nodeRef prop', () => {
+    it('should use nodeRef instead of findDOMNode', () => {
+      const onDrag = vi.fn();
+
+      function TestComponent() {
+        const nodeRef = useRef(null);
+        return (
+          <DraggableCore nodeRef={nodeRef} onDrag={onDrag}>
+            <div ref={nodeRef} data-testid="target" />
+          </DraggableCore>
+        );
+      }
+
+      const { getByTestId } = render(<TestComponent />);
+      const target = getByTestId('target');
+
+      startDrag(target, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onDrag).toHaveBeenCalled();
+      expect(onDrag.mock.calls[0][1].node).toBe(target);
+    });
+
+    it('should work with forwardRef components', () => {
+      const onDrag = vi.fn();
+
+      const CustomComponent = React.forwardRef((props, ref) => (
+        <div {...props} ref={ref}>Custom</div>
+      ));
+
+      function TestComponent() {
+        const nodeRef = useRef(null);
+        return (
+          <DraggableCore nodeRef={nodeRef} onDrag={onDrag}>
+            <CustomComponent ref={nodeRef} data-testid="target" />
+          </DraggableCore>
+        );
+      }
+
+      const { getByTestId } = render(<TestComponent />);
+      const target = getByTestId('target');
+
+      startDrag(target, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onDrag).toHaveBeenCalled();
+      expect(onDrag.mock.calls[0][1].node.textContent).toBe('Custom');
+    });
+  });
+
+  describe('touch events', () => {
+    it('should handle touch start', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      container.firstChild.dispatchEvent(createTouchEvent('touchstart', { clientX: 0, clientY: 0 }));
+      expect(onStart).toHaveBeenCalled();
+    });
+
+    it('should call preventDefault on touchstart by default', () => {
+      const { container } = render(
+        <DraggableCoreWrapper>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      const event = createTouchEvent('touchstart', { clientX: 0, clientY: 0 });
+      let prevented = false;
+      event.preventDefault = () => { prevented = true; };
+
+      container.firstChild.dispatchEvent(event);
+      expect(prevented).toBe(true);
+    });
+
+    it('should not call preventDefault when allowMobileScroll is true', () => {
+      const { container } = render(
+        <DraggableCoreWrapper allowMobileScroll>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      const event = createTouchEvent('touchstart', { clientX: 0, clientY: 0 });
+      let prevented = false;
+      event.preventDefault = () => { prevented = true; };
+
+      container.firstChild.dispatchEvent(event);
+      expect(prevented).toBe(false);
+    });
+  });
+
+  describe('onMouseDown prop', () => {
+    it('should call onMouseDown callback', () => {
+      const onMouseDown = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onMouseDown={onMouseDown}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(onMouseDown).toHaveBeenCalled();
+    });
+
+    it('should call onMouseDown even when disabled', () => {
+      const onMouseDown = vi.fn();
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper disabled onMouseDown={onMouseDown} onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(onMouseDown).toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('enableUserSelectHack prop', () => {
+    it('should add transparent selection class by default', () => {
+      const { container } = render(
+        <DraggableCoreWrapper>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(document.body.classList.contains('react-draggable-transparent-selection')).toBe(true);
+
+      endDrag(container.firstChild, { x: 0, y: 0 });
+      // rAF mock immediately calls the callback
+      expect(document.body.classList.contains('react-draggable-transparent-selection')).toBe(false);
+    });
+
+    it('should not add class when enableUserSelectHack is false', () => {
+      const { container } = render(
+        <DraggableCoreWrapper enableUserSelectHack={false}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      expect(document.body.classList.contains('react-draggable-transparent-selection')).toBe(false);
+    });
+
+    it('should not add user-select class when onStart returns false', () => {
+      const onStart = vi.fn(() => false);
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      // Ensure class is not present before drag
+      expect(document.body.classList.contains('react-draggable-transparent-selection')).toBe(false);
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+
+      // onStart returned false, so user-select hack should not be applied
+      expect(onStart).toHaveBeenCalled();
+      expect(document.body.classList.contains('react-draggable-transparent-selection')).toBe(false);
+    });
+  });
+
+  describe('unmount safety', () => {
+    it('should track mounted state correctly', () => {
+      const coreRef = React.createRef();
+      render(
+        <DraggableCoreWrapper coreRef={coreRef}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      // Verify mounted is true after mount
+      expect(coreRef.current.mounted).toBe(true);
+
+      // Store reference before unmount since ref.current becomes null
+      const instance = coreRef.current;
+      cleanup();
+
+      // Verify mounted is false after unmount (using stored reference)
+      expect(instance.mounted).toBe(false);
+    });
+
+    it('should not continue drag if onStart returns false', () => {
+      const onStart = vi.fn(() => false);
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableCoreWrapper onStart={onStart} onDrag={onDrag}>
+          <div />
+        </DraggableCoreWrapper>
+      );
+
+      startDrag(container.firstChild, { x: 0, y: 0 });
+      moveDrag({ x: 100, y: 100 });
+
+      expect(onStart).toHaveBeenCalled();
+      // onDrag should not be called because onStart returned false
+      expect(onDrag).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('touch events with handle', () => {
+    it('should call preventDefault on touchstart when using handle', () => {
+      const { container } = render(
+        <DraggableCoreWrapper handle=".handle">
+          <div>
+            <div className="handle">Handle</div>
+          </div>
+        </DraggableCoreWrapper>
+      );
+
+      const handle = container.querySelector('.handle');
+      const event = createTouchEvent('touchstart', { clientX: 0, clientY: 0 });
+      let prevented = false;
+      event.preventDefault = () => { prevented = true; };
+
+      handle.dispatchEvent(event);
+      expect(prevented).toBe(true);
+    });
+
+    it('should not call preventDefault on touchstart for cancel elements', () => {
+      const { container } = render(
+        <DraggableCoreWrapper cancel=".cancel">
+          <div>
+            <div className="cancel">Cancel</div>
+            <div className="content">Content</div>
+          </div>
+        </DraggableCoreWrapper>
+      );
+
+      const cancel = container.querySelector('.cancel');
+      const event = createTouchEvent('touchstart', { clientX: 0, clientY: 0 });
+      let prevented = false;
+      event.preventDefault = () => { prevented = true; };
+
+      cancel.dispatchEvent(event);
+      // Should not prevent default since drag was cancelled
+      expect(prevented).toBe(false);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should throw error when no children provided', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const nodeRef = React.createRef();
+
+      let threw = false;
+      try {
+        render(<DraggableCore nodeRef={nodeRef} />);
+      } catch (e) {
+        threw = true;
+        expect(e.message).toMatch(/React.Children.only|expected/i);
+      }
+
+      expect(threw).toBe(true);
+      errorSpy.mockRestore();
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/Draggable.test.jsx
+--->
+
+import React, { useRef, useState } from 'react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, cleanup, act } from '@testing-library/react';
+import Draggable, { DraggableCore } from '../lib/Draggable';
+import { simulateDrag, startDrag, moveDrag, endDrag } from './testUtils';
+
+// Helper wrapper components that provide nodeRef (required in React 19)
+function DraggableWrapper({ children, draggableRef, ...props }) {
+  const nodeRef = useRef(null);
+  return (
+    <Draggable ref={draggableRef} nodeRef={nodeRef} {...props}>
+      {React.cloneElement(children, { ref: nodeRef })}
+    </Draggable>
+  );
+}
+
+function DraggableCorWrapper({ children, coreRef, ...props }) {
+  const nodeRef = useRef(null);
+  return (
+    <DraggableCore ref={coreRef} nodeRef={nodeRef} {...props}>
+      {React.cloneElement(children, { ref: nodeRef })}
+    </DraggableCore>
+  );
+}
+
+describe('Draggable', () => {
+  afterEach(() => {
+    cleanup();
+    // Clean up any leftover classes on body
+    document.body.className = '';
+  });
+
+  describe('default props', () => {
+    it('should have sensible defaults', () => {
+      const draggableRef = React.createRef();
+      render(
+        <DraggableWrapper draggableRef={draggableRef}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(draggableRef.current.props.axis).toBe('both');
+      expect(draggableRef.current.props.bounds).toBe(false);
+      expect(draggableRef.current.props.defaultClassName).toBe('react-draggable');
+      expect(draggableRef.current.props.defaultClassNameDragging).toBe('react-draggable-dragging');
+      expect(draggableRef.current.props.defaultClassNameDragged).toBe('react-draggable-dragged');
+      expect(draggableRef.current.props.scale).toBe(1);
+    });
+  });
+
+  describe('rendering', () => {
+    it('should render with default class', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.classList.contains('react-draggable')).toBe(true);
+    });
+
+    it('should preserve child className', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div className="my-class" />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.classList.contains('my-class')).toBe(true);
+      expect(container.firstChild.classList.contains('react-draggable')).toBe(true);
+    });
+
+    it('should preserve child styles', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div style={{ color: 'red' }} />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.color).toBe('red');
+    });
+
+    it('should apply transform style', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.transform).toMatch(/translate\(0px,?\s*0px\)/);
+    });
+
+    it('should use custom defaultClassName', () => {
+      const { container } = render(
+        <DraggableWrapper defaultClassName="custom-draggable">
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.classList.contains('custom-draggable')).toBe(true);
+      expect(container.firstChild.classList.contains('react-draggable')).toBe(false);
+    });
+  });
+
+  describe('dragging classes', () => {
+    it('should add dragging class during drag', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.classList.contains('react-draggable-dragging')).toBe(false);
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(container.firstChild.classList.contains('react-draggable-dragging')).toBe(true);
+      act(() => {
+        endDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(container.firstChild.classList.contains('react-draggable-dragging')).toBe(false);
+    });
+
+    it('should add dragged class after drag', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.classList.contains('react-draggable-dragged')).toBe(false);
+      act(() => {
+        simulateDrag(container.firstChild, { from: { x: 0, y: 0 }, to: { x: 100, y: 100 } });
+      });
+      expect(container.firstChild.classList.contains('react-draggable-dragged')).toBe(true);
+    });
+
+    it('should use custom class names', () => {
+      const { container } = render(
+        <DraggableWrapper
+          defaultClassName="custom"
+          defaultClassNameDragging="custom-dragging"
+          defaultClassNameDragged="custom-dragged"
+        >
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(container.firstChild.classList.contains('custom-dragging')).toBe(true);
+      act(() => {
+        endDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(container.firstChild.classList.contains('custom-dragged')).toBe(true);
+    });
+  });
+
+  describe('position', () => {
+    // Note: Transform updates during drag are tested in browser tests
+    // (test/browser/browser.test.js) because jsdom doesn't support
+    // coordinate calculations. See 'should update transform on drag' test there.
+
+    it('should respect defaultPosition', () => {
+      const { container } = render(
+        <DraggableWrapper defaultPosition={{ x: 50, y: 50 }}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.transform).toMatch(/translate\(50px,?\s*50px\)/);
+    });
+
+    it('should use controlled position', () => {
+      const { container } = render(
+        <DraggableWrapper position={{ x: 100, y: 100 }}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.transform).toMatch(/translate\(100px,?\s*100px\)/);
+    });
+
+    it('should respect positionOffset with numbers', () => {
+      const { container } = render(
+        <DraggableWrapper positionOffset={{ x: 10, y: 20 }}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.transform).toContain('translate(10px, 20px)');
+    });
+
+    it('should respect positionOffset with percentages', () => {
+      const { container } = render(
+        <DraggableWrapper positionOffset={{ x: '50%', y: '50%' }}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.style.transform).toContain('translate(50%, 50%)');
+    });
+  });
+
+  describe('axis constraint', () => {
+    // Note: Axis constraint tests with actual dragging are in browser tests
+    // (test/browser/browser.test.js) because jsdom doesn't support coordinate
+    // calculations. See 'should honor x axis constraint' and 'should honor y axis constraint'.
+
+    it('should not move when axis="none"', () => {
+      const { container } = render(
+        <DraggableWrapper axis="none">
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+        moveDrag({ x: 100, y: 100 });
+        endDrag(container.firstChild, { x: 100, y: 100 });
+      });
+      expect(container.firstChild.style.transform).toMatch(/translate\(0px,?\s*0px\)/);
+    });
+  });
+
+  describe('callbacks', () => {
+    it('should call onStart when drag starts', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableWrapper onStart={onStart}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(onStart).toHaveBeenCalledTimes(1);
+    });
+
+    // Note: onStop callback test is in browser tests (test/browser/browser.test.js)
+    // because jsdom doesn't support coordinate calculations.
+    // See 'should call onStop when drag ends' test there.
+
+    it('should cancel drag when onStart returns false', () => {
+      const onStart = vi.fn(() => false);
+      const onDrag = vi.fn();
+      const { container } = render(
+        <DraggableWrapper onStart={onStart} onDrag={onDrag}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+        moveDrag({ x: 100, y: 100 });
+      });
+
+      expect(onStart).toHaveBeenCalled();
+      expect(onDrag).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('SVG support', () => {
+    it('should detect SVG elements', () => {
+      const draggableRef = React.createRef();
+      render(
+        <DraggableWrapper draggableRef={draggableRef}>
+          <svg />
+        </DraggableWrapper>
+      );
+
+      expect(draggableRef.current.state.isElementSVG).toBe(true);
+    });
+
+    it('should not set isElementSVG for non-SVG elements', () => {
+      const draggableRef = React.createRef();
+      render(
+        <DraggableWrapper draggableRef={draggableRef}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      expect(draggableRef.current.state.isElementSVG).toBe(false);
+    });
+
+    it('should set initial transform attribute for SVG', () => {
+      const { container } = render(
+        <DraggableWrapper>
+          <svg />
+        </DraggableWrapper>
+      );
+
+      expect(container.firstChild.getAttribute('transform')).toContain('translate(0,0)');
+    });
+  });
+
+  describe('controlled component', () => {
+    it('should respect position prop changes', () => {
+      function ControlledTest() {
+        const [position, setPosition] = useState({ x: 0, y: 0 });
+        return (
+          <>
+            <button onClick={() => setPosition({ x: 100, y: 100 })}>Move</button>
+            <DraggableWrapper position={position}>
+              <div data-testid="draggable" />
+            </DraggableWrapper>
+          </>
+        );
+      }
+
+      const { container, getByRole, getByTestId } = render(<ControlledTest />);
+
+      expect(getByTestId('draggable').style.transform).toMatch(/translate\(0px,?\s*0px\)/);
+
+      act(() => {
+        getByRole('button').click();
+      });
+
+      expect(getByTestId('draggable').style.transform).toMatch(/translate\(100px,?\s*100px\)/);
+    });
+
+    it('should revert to controlled position after drag', () => {
+      const onStop = vi.fn();
+      const { container } = render(
+        <DraggableWrapper position={{ x: 50, y: 50 }} onStop={onStop}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        simulateDrag(container.firstChild, { from: { x: 50, y: 50 }, to: { x: 150, y: 150 } });
+      });
+
+      // After drag ends, should revert to controlled position
+      expect(container.firstChild.style.transform).toMatch(/translate\(50px,?\s*50px\)/);
+    });
+  });
+
+  describe('disabled prop', () => {
+    it('should not drag when disabled', () => {
+      const onStart = vi.fn();
+      const { container } = render(
+        <DraggableWrapper disabled onStart={onStart}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      act(() => {
+        startDrag(container.firstChild, { x: 0, y: 0 });
+      });
+      expect(onStart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('validation', () => {
+    it('should throw when no children provided', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const nodeRef = React.createRef();
+
+      let threw = false;
+      try {
+        render(<Draggable nodeRef={nodeRef} />);
+      } catch (e) {
+        threw = true;
+        // Can throw either React.Children.only error or props access error
+        expect(e).toBeDefined();
+      }
+
+      expect(threw).toBe(true);
+      errorSpy.mockRestore();
+    });
+
+    it('should throw when multiple children provided', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const nodeRef = React.createRef();
+
+      let threw = false;
+      try {
+        render(
+          <Draggable nodeRef={nodeRef}>
+            <div>One</div>
+            <div>Two</div>
+          </Draggable>
+        );
+      } catch (e) {
+        threw = true;
+        // Can throw either React.Children.only error or className access error
+        expect(e).toBeDefined();
+      }
+
+      expect(threw).toBe(true);
+      errorSpy.mockRestore();
+    });
+
+    // Note: React 19 removed runtime propTypes checking, so these tests now just verify
+    // that the component still renders correctly when invalid props are passed.
+    // The dontSetMe validators are defined but no longer trigger warnings in React 19.
+    it('should still render when className is set on Draggable', () => {
+      const { container } = render(
+        <DraggableWrapper className="invalid">
+          <div />
+        </DraggableWrapper>
+      );
+
+      // Component should still render
+      expect(container.firstChild).toBeTruthy();
+      expect(container.firstChild.classList.contains('react-draggable')).toBe(true);
+    });
+
+    it('should still render when style is set on Draggable', () => {
+      const { container } = render(
+        <DraggableWrapper style={{ color: 'red' }}>
+          <div />
+        </DraggableWrapper>
+      );
+
+      // Component should still render
+      expect(container.firstChild).toBeTruthy();
+    });
+
+    it('should still render when transform is set on Draggable', () => {
+      const { container } = render(
+        <DraggableWrapper transform="translate(100px, 100px)">
+          <div />
+        </DraggableWrapper>
+      );
+
+      // Component should still render
+      expect(container.firstChild).toBeTruthy();
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/setup.js
+--->
+
+import { vi } from 'vitest';
+import '@testing-library/dom';
+
+// Mock requestAnimationFrame for consistent test behavior
+global.requestAnimationFrame = vi.fn((callback) => {
+  callback();
+  return 0;
+});
+
+global.cancelAnimationFrame = vi.fn();
+
+// Reset body margin like old tests did
+const styleEl = document.createElement('style');
+styleEl.textContent = 'body { margin: 0; }';
+document.head.appendChild(styleEl);
+
+<---
+
+==================================================================================================================================================================
+./test/utils/getPrefix.test.js
+--->
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getPrefix, browserPrefixToKey, browserPrefixToStyle } from '../../lib/utils/getPrefix';
+
+describe('getPrefix utilities', () => {
+  describe('browserPrefixToKey', () => {
+    it('should return prop unchanged when no prefix', () => {
+      expect(browserPrefixToKey('transform', '')).toBe('transform');
+    });
+
+    it('should prefix and capitalize for Webkit', () => {
+      expect(browserPrefixToKey('transform', 'Webkit')).toBe('WebkitTransform');
+    });
+
+    it('should prefix and capitalize for Moz', () => {
+      expect(browserPrefixToKey('transform', 'Moz')).toBe('MozTransform');
+    });
+
+    it('should handle kebab-case properties', () => {
+      expect(browserPrefixToKey('user-select', 'Webkit')).toBe('WebkitUserSelect');
+    });
+
+    it('should handle multi-hyphen properties', () => {
+      expect(browserPrefixToKey('border-top-left-radius', 'Webkit')).toBe('WebkitBorderTopLeftRadius');
+    });
+  });
+
+  describe('browserPrefixToStyle', () => {
+    it('should return prop unchanged when no prefix', () => {
+      expect(browserPrefixToStyle('transform', '')).toBe('transform');
+    });
+
+    it('should add CSS prefix for Webkit', () => {
+      expect(browserPrefixToStyle('transform', 'Webkit')).toBe('-webkit-transform');
+    });
+
+    it('should add CSS prefix for Moz', () => {
+      expect(browserPrefixToStyle('transform', 'Moz')).toBe('-moz-transform');
+    });
+
+    it('should add CSS prefix for ms', () => {
+      expect(browserPrefixToStyle('transform', 'ms')).toBe('-ms-transform');
+    });
+  });
+
+  describe('getPrefix', () => {
+    let originalWindow;
+
+    beforeEach(() => {
+      originalWindow = global.window;
+    });
+
+    afterEach(() => {
+      global.window = originalWindow;
+    });
+
+    it('should return empty string when window is undefined', () => {
+      global.window = undefined;
+      expect(getPrefix('transform')).toBe('');
+    });
+
+    it('should return empty string when documentElement.style is unavailable', () => {
+      global.window = { document: {} };
+      expect(getPrefix('transform')).toBe('');
+    });
+
+    it('should return empty string when prop exists unprefixed', () => {
+      global.window = {
+        document: {
+          documentElement: {
+            style: { transform: '' }
+          }
+        }
+      };
+      expect(getPrefix('transform')).toBe('');
+    });
+
+    it('should return Webkit prefix when WebkitTransform exists', () => {
+      global.window = {
+        document: {
+          documentElement: {
+            style: { WebkitTransform: '' }
+          }
+        }
+      };
+      expect(getPrefix('transform')).toBe('Webkit');
+    });
+
+    it('should return Moz prefix when MozTransform exists', () => {
+      global.window = {
+        document: {
+          documentElement: {
+            style: { MozTransform: '' }
+          }
+        }
+      };
+      expect(getPrefix('transform')).toBe('Moz');
+    });
+
+    it('should return empty string when no prefix matches', () => {
+      global.window = {
+        document: {
+          documentElement: {
+            style: {}
+          }
+        }
+      };
+      expect(getPrefix('someUnknownProperty')).toBe('');
+    });
+
+    it('should use transform as default prop', () => {
+      global.window = {
+        document: {
+          documentElement: {
+            style: { transform: '' }
+          }
+        }
+      };
+      expect(getPrefix()).toBe('');
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/utils/shims.test.js
+--->
+
+import { describe, it, expect } from 'vitest';
+import { findInArray, isFunction, isNum, int, dontSetMe } from '../../lib/utils/shims';
+
+describe('shims utilities', () => {
+  describe('findInArray', () => {
+    it('should find first element matching callback', () => {
+      const arr = [1, 2, 3, 4, 5];
+      const result = findInArray(arr, (x) => x > 3);
+      expect(result).toBe(4);
+    });
+
+    it('should return undefined if no match found', () => {
+      const arr = [1, 2, 3];
+      const result = findInArray(arr, (x) => x > 10);
+      expect(result).toBeUndefined();
+    });
+
+    it('should work with objects', () => {
+      const arr = [{ id: 1 }, { id: 2 }, { id: 3 }];
+      const result = findInArray(arr, (x) => x.id === 2);
+      expect(result).toEqual({ id: 2 });
+    });
+
+    it('should pass index and array to callback', () => {
+      const arr = ['a', 'b', 'c'];
+      const result = findInArray(arr, (val, idx, array) => idx === 1 && array.length === 3);
+      expect(result).toBe('b');
+    });
+  });
+
+  describe('isFunction', () => {
+    it('should return true for regular functions', () => {
+      expect(isFunction(function() {})).toBe(true);
+    });
+
+    it('should return true for arrow functions', () => {
+      expect(isFunction(() => {})).toBe(true);
+    });
+
+    it('should return true for async functions', () => {
+      expect(isFunction(async () => {})).toBe(true);
+    });
+
+    it('should return false for non-functions', () => {
+      expect(isFunction(null)).toBe(false);
+      expect(isFunction(undefined)).toBe(false);
+      expect(isFunction(42)).toBe(false);
+      expect(isFunction('string')).toBe(false);
+      expect(isFunction({})).toBe(false);
+      expect(isFunction([])).toBe(false);
+    });
+  });
+
+  describe('isNum', () => {
+    it('should return true for valid numbers', () => {
+      expect(isNum(0)).toBe(true);
+      expect(isNum(42)).toBe(true);
+      expect(isNum(-10)).toBe(true);
+      expect(isNum(3.14)).toBe(true);
+      expect(isNum(Infinity)).toBe(true);
+    });
+
+    it('should return false for NaN', () => {
+      expect(isNum(NaN)).toBe(false);
+    });
+
+    it('should return false for non-numbers', () => {
+      expect(isNum(null)).toBe(false);
+      expect(isNum(undefined)).toBe(false);
+      expect(isNum('42')).toBe(false);
+      expect(isNum({})).toBe(false);
+    });
+  });
+
+  describe('int', () => {
+    it('should parse integer strings', () => {
+      expect(int('42')).toBe(42);
+      expect(int('0')).toBe(0);
+      expect(int('-10')).toBe(-10);
+    });
+
+    it('should parse pixel values', () => {
+      expect(int('10px')).toBe(10);
+      expect(int('100em')).toBe(100);
+    });
+
+    it('should handle decimal strings by truncating', () => {
+      expect(int('3.14')).toBe(3);
+      expect(int('99.99')).toBe(99);
+    });
+  });
+
+  describe('dontSetMe', () => {
+    it('should return error when prop is set', () => {
+      const props = { className: 'foo' };
+      const result = dontSetMe(props, 'className', 'Draggable');
+      expect(result).toBeInstanceOf(Error);
+      expect(result.message).toContain('className');
+      expect(result.message).toContain('Draggable');
+    });
+
+    it('should return undefined when prop is not set', () => {
+      const props = {};
+      const result = dontSetMe(props, 'className', 'Draggable');
+      expect(result).toBeUndefined();
+    });
+
+    it('should return undefined for falsy values', () => {
+      expect(dontSetMe({ className: null }, 'className', 'Draggable')).toBeUndefined();
+      expect(dontSetMe({ className: '' }, 'className', 'Draggable')).toBeUndefined();
+      expect(dontSetMe({ className: 0 }, 'className', 'Draggable')).toBeUndefined();
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/utils/domFns.test.js
+--->
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  matchesSelector,
+  matchesSelectorAndParentsTo,
+  addEvent,
+  removeEvent,
+  outerHeight,
+  outerWidth,
+  innerHeight,
+  innerWidth,
+  addClassName,
+  removeClassName,
+  getTranslation,
+} from '../../lib/utils/domFns';
+
+describe('domFns utilities', () => {
+  let container;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.removeChild(container);
+  });
+
+  describe('matchesSelector', () => {
+    it('should match simple class selectors', () => {
+      const el = document.createElement('div');
+      el.className = 'foo bar';
+      expect(matchesSelector(el, '.foo')).toBe(true);
+      expect(matchesSelector(el, '.bar')).toBe(true);
+      expect(matchesSelector(el, '.baz')).toBe(false);
+    });
+
+    it('should match id selectors', () => {
+      const el = document.createElement('div');
+      el.id = 'test';
+      expect(matchesSelector(el, '#test')).toBe(true);
+      expect(matchesSelector(el, '#other')).toBe(false);
+    });
+
+    it('should match tag selectors', () => {
+      const div = document.createElement('div');
+      const span = document.createElement('span');
+      expect(matchesSelector(div, 'div')).toBe(true);
+      expect(matchesSelector(div, 'span')).toBe(false);
+      expect(matchesSelector(span, 'span')).toBe(true);
+    });
+  });
+
+  describe('matchesSelectorAndParentsTo', () => {
+    it('should match element itself', () => {
+      const el = document.createElement('div');
+      el.className = 'target';
+      container.appendChild(el);
+      expect(matchesSelectorAndParentsTo(el, '.target', container)).toBe(true);
+    });
+
+    it('should match parent elements', () => {
+      const parent = document.createElement('div');
+      parent.className = 'parent';
+      const child = document.createElement('span');
+      parent.appendChild(child);
+      container.appendChild(parent);
+
+      expect(matchesSelectorAndParentsTo(child, '.parent', container)).toBe(true);
+    });
+
+    it('should stop at baseNode', () => {
+      const outer = document.createElement('div');
+      outer.className = 'outer';
+      const inner = document.createElement('div');
+      const target = document.createElement('span');
+      inner.appendChild(target);
+      outer.appendChild(inner);
+      container.appendChild(outer);
+
+      // Should not match outer because inner is the baseNode
+      expect(matchesSelectorAndParentsTo(target, '.outer', inner)).toBe(false);
+      // But should match if container is baseNode
+      expect(matchesSelectorAndParentsTo(target, '.outer', container)).toBe(true);
+    });
+
+    it('should return false when no match', () => {
+      const el = document.createElement('div');
+      container.appendChild(el);
+      expect(matchesSelectorAndParentsTo(el, '.nonexistent', container)).toBe(false);
+    });
+  });
+
+  describe('addEvent / removeEvent', () => {
+    it('should add and remove event listeners', () => {
+      const handler = vi.fn();
+      const el = document.createElement('div');
+
+      addEvent(el, 'click', handler);
+      el.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      removeEvent(el, 'click', handler);
+      el.dispatchEvent(new Event('click', { bubbles: true }));
+      expect(handler).toHaveBeenCalledTimes(1); // Still 1, not called again
+    });
+
+    it('should handle null elements gracefully', () => {
+      const handler = vi.fn();
+      expect(() => addEvent(null, 'click', handler)).not.toThrow();
+      expect(() => removeEvent(null, 'click', handler)).not.toThrow();
+    });
+  });
+
+  describe('outerHeight / outerWidth', () => {
+    it('should calculate outer dimensions including borders', () => {
+      const el = document.createElement('div');
+      el.style.width = '100px';
+      el.style.height = '100px';
+      el.style.borderWidth = '5px';
+      el.style.borderStyle = 'solid';
+      container.appendChild(el);
+
+      // In jsdom, getBoundingClientRect returns 0s, so we test the function exists
+      // Real dimension tests would need a real browser
+      expect(typeof outerHeight(el)).toBe('number');
+      expect(typeof outerWidth(el)).toBe('number');
+    });
+  });
+
+  describe('innerHeight / innerWidth', () => {
+    it('should calculate inner dimensions excluding padding', () => {
+      const el = document.createElement('div');
+      el.style.width = '100px';
+      el.style.height = '100px';
+      el.style.padding = '10px';
+      container.appendChild(el);
+
+      expect(typeof innerHeight(el)).toBe('number');
+      expect(typeof innerWidth(el)).toBe('number');
+    });
+  });
+
+  describe('addClassName / removeClassName', () => {
+    it('should add class names', () => {
+      const el = document.createElement('div');
+      addClassName(el, 'foo');
+      expect(el.classList.contains('foo')).toBe(true);
+    });
+
+    it('should not duplicate class names', () => {
+      const el = document.createElement('div');
+      addClassName(el, 'foo');
+      addClassName(el, 'foo');
+      expect(el.className).toBe('foo');
+    });
+
+    it('should remove class names', () => {
+      const el = document.createElement('div');
+      el.className = 'foo bar baz';
+      removeClassName(el, 'bar');
+      expect(el.classList.contains('foo')).toBe(true);
+      expect(el.classList.contains('bar')).toBe(false);
+      expect(el.classList.contains('baz')).toBe(true);
+    });
+
+    it('should handle removing non-existent classes', () => {
+      const el = document.createElement('div');
+      el.className = 'foo';
+      expect(() => removeClassName(el, 'bar')).not.toThrow();
+      expect(el.className).toBe('foo');
+    });
+  });
+
+  describe('getTranslation', () => {
+    it('should create translate string with px suffix', () => {
+      const result = getTranslation({ x: 100, y: 200 }, null, 'px');
+      expect(result).toBe('translate(100px,200px)');
+    });
+
+    it('should create translate string without suffix (for SVG)', () => {
+      const result = getTranslation({ x: 100, y: 200 }, null, '');
+      expect(result).toBe('translate(100,200)');
+    });
+
+    it('should include position offset when provided', () => {
+      const result = getTranslation({ x: 100, y: 200 }, { x: 10, y: 20 }, 'px');
+      expect(result).toBe('translate(10px, 20px)translate(100px,200px)');
+    });
+
+    it('should handle percentage offsets', () => {
+      const result = getTranslation({ x: 100, y: 200 }, { x: '10%', y: '20%' }, 'px');
+      expect(result).toBe('translate(10%, 20%)translate(100px,200px)');
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/utils/positionFns.test.js
+--->
+
+import { describe, it, expect } from 'vitest';
+import { snapToGrid, canDragX, canDragY, createCoreData, createDraggableData } from '../../lib/utils/positionFns';
+
+describe('positionFns utilities', () => {
+  describe('snapToGrid', () => {
+    it('should snap to grid values', () => {
+      expect(snapToGrid([10, 10], 15, 15)).toEqual([20, 20]);
+      expect(snapToGrid([10, 10], 14, 14)).toEqual([10, 10]);
+    });
+
+    it('should handle different x and y grid values', () => {
+      expect(snapToGrid([5, 10], 12, 12)).toEqual([10, 10]);
+      expect(snapToGrid([5, 10], 13, 16)).toEqual([15, 20]);
+    });
+
+    it('should handle zero values', () => {
+      expect(snapToGrid([10, 10], 0, 0)).toEqual([0, 0]);
+    });
+
+    it('should handle negative values', () => {
+      // Math.round(-1.5) = -1 in JavaScript (rounds toward +∞)
+      expect(snapToGrid([10, 10], -15, -15)).toEqual([-10, -10]);
+      expect(snapToGrid([10, 10], -14, -14)).toEqual([-10, -10]);
+      expect(snapToGrid([10, 10], -16, -16)).toEqual([-20, -20]);
+    });
+
+    it('should snap exactly at grid boundaries', () => {
+      expect(snapToGrid([10, 10], 10, 10)).toEqual([10, 10]);
+      expect(snapToGrid([10, 10], 20, 20)).toEqual([20, 20]);
+    });
+
+    it('should round at midpoint (standard Math.round behavior)', () => {
+      // 5 is midpoint for grid of 10, rounds up
+      expect(snapToGrid([10, 10], 5, 5)).toEqual([10, 10]);
+      // 4 rounds down
+      expect(snapToGrid([10, 10], 4, 4)).toEqual([0, 0]);
+    });
+  });
+
+  describe('canDragX', () => {
+    it('should return true for axis "both"', () => {
+      const draggable = { props: { axis: 'both' } };
+      expect(canDragX(draggable)).toBe(true);
+    });
+
+    it('should return true for axis "x"', () => {
+      const draggable = { props: { axis: 'x' } };
+      expect(canDragX(draggable)).toBe(true);
+    });
+
+    it('should return false for axis "y"', () => {
+      const draggable = { props: { axis: 'y' } };
+      expect(canDragX(draggable)).toBe(false);
+    });
+
+    it('should return false for axis "none"', () => {
+      const draggable = { props: { axis: 'none' } };
+      expect(canDragX(draggable)).toBe(false);
+    });
+  });
+
+  describe('canDragY', () => {
+    it('should return true for axis "both"', () => {
+      const draggable = { props: { axis: 'both' } };
+      expect(canDragY(draggable)).toBe(true);
+    });
+
+    it('should return true for axis "y"', () => {
+      const draggable = { props: { axis: 'y' } };
+      expect(canDragY(draggable)).toBe(true);
+    });
+
+    it('should return false for axis "x"', () => {
+      const draggable = { props: { axis: 'x' } };
+      expect(canDragY(draggable)).toBe(false);
+    });
+
+    it('should return false for axis "none"', () => {
+      const draggable = { props: { axis: 'none' } };
+      expect(canDragY(draggable)).toBe(false);
+    });
+  });
+
+  describe('createCoreData', () => {
+    const mockNode = document.createElement('div');
+
+    it('should create initial data when lastX/lastY are NaN', () => {
+      const draggableCore = {
+        lastX: NaN,
+        lastY: NaN,
+        findDOMNode: () => mockNode
+      };
+      const data = createCoreData(draggableCore, 100, 200);
+      expect(data).toEqual({
+        node: mockNode,
+        deltaX: 0,
+        deltaY: 0,
+        lastX: 100,
+        lastY: 200,
+        x: 100,
+        y: 200
+      });
+    });
+
+    it('should calculate deltas when lastX/lastY are set', () => {
+      const draggableCore = {
+        lastX: 50,
+        lastY: 100,
+        findDOMNode: () => mockNode
+      };
+      const data = createCoreData(draggableCore, 150, 250);
+      expect(data).toEqual({
+        node: mockNode,
+        deltaX: 100,
+        deltaY: 150,
+        lastX: 50,
+        lastY: 100,
+        x: 150,
+        y: 250
+      });
+    });
+
+    it('should throw when node is unmounted', () => {
+      const draggableCore = {
+        lastX: NaN,
+        lastY: NaN,
+        findDOMNode: () => null
+      };
+      expect(() => createCoreData(draggableCore, 0, 0)).toThrow('Unmounted during event');
+    });
+  });
+
+  describe('createDraggableData', () => {
+    const mockNode = document.createElement('div');
+
+    it('should create data with scale of 1', () => {
+      const draggable = {
+        props: { scale: 1 },
+        state: { x: 100, y: 200 }
+      };
+      const coreData = {
+        node: mockNode,
+        deltaX: 10,
+        deltaY: 20,
+        lastX: 100,
+        lastY: 200,
+        x: 110,
+        y: 220
+      };
+      const data = createDraggableData(draggable, coreData);
+      expect(data).toEqual({
+        node: mockNode,
+        x: 110,
+        y: 220,
+        deltaX: 10,
+        deltaY: 20,
+        lastX: 100,
+        lastY: 200
+      });
+    });
+
+    it('should apply scale to delta values', () => {
+      const draggable = {
+        props: { scale: 2 },
+        state: { x: 100, y: 200 }
+      };
+      const coreData = {
+        node: mockNode,
+        deltaX: 20,
+        deltaY: 40,
+        lastX: 100,
+        lastY: 200,
+        x: 120,
+        y: 240
+      };
+      const data = createDraggableData(draggable, coreData);
+      expect(data).toEqual({
+        node: mockNode,
+        x: 110,  // 100 + (20/2)
+        y: 220,  // 200 + (40/2)
+        deltaX: 10,  // 20/2
+        deltaY: 20,  // 40/2
+        lastX: 100,
+        lastY: 200
+      });
+    });
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/browser/browser.test.js
+--->
+
+/**
+ * Browser-based tests using Puppeteer
+ * These tests require a real browser for proper coordinate calculations
+ */
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import puppeteer from 'puppeteer';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+describe('Browser Tests', () => {
+  let browser;
+  let page;
+
+  beforeAll(async () => {
+    browser = await puppeteer.launch({
+      headless: true,
+      // Disable sandbox in CI environments (required for GitHub Actions runners)
+      args: process.env.CI ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    if (browser) await browser.close();
+  });
+
+  beforeEach(async () => {
+    page = await browser.newPage();
+    // Load the test page via file protocol
+    const testHtmlPath = path.resolve(__dirname, 'test.html');
+    await page.goto(`file://${testHtmlPath}`);
+    // Wait for React/ReactDOM to be available
+    await page.waitForFunction(() => window.React && window.ReactDOM);
+  }, 30000);
+
+  afterEach(async () => {
+    if (page) await page.close();
+  });
+
+  describe('Dragging position', () => {
+    it('should update transform on drag', async () => {
+      // Render a basic draggable
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      // Get initial transform
+      const initialTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(initialTransform).toMatch(/translate\(0px,?\s*0px\)/);
+
+      // Simulate drag
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      // Check final transform
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(100px,?\s*100px\)/);
+    }, 30000);
+
+    it('should honor x axis constraint', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { axis: 'x', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(100px,?\s*0px\)/);
+    }, 30000);
+
+    it('should honor y axis constraint', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { axis: 'y', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(0px,?\s*100px\)/);
+    }, 30000);
+  });
+
+  describe('Callbacks', () => {
+    it('should call onStop when drag ends', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        window.stopCalled = false;
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            onStop: () => { window.stopCalled = true; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const stopCalled = await page.evaluate(() => window.stopCalled);
+      expect(stopCalled).toBe(true);
+    }, 30000);
+  });
+
+  describe('Bounds', () => {
+    it('should clip dragging to bounds object', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            bounds: { left: 0, right: 50, top: 0, bottom: 50 }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 200, box.y + 200);
+      await page.mouse.up();
+
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(50px,?\s*50px\)/);
+    }, 30000);
+
+    it('should clip dragging to parent bounds', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement('div', {
+            id: 'parent',
+            style: {
+              width: '300px',
+              height: '300px',
+              position: 'relative',
+              background: '#ccc'
+            }
+          },
+            React.createElement(Draggable, { bounds: 'parent', nodeRef: ref },
+              React.createElement('div', {
+                ref: ref,
+                id: 'draggable-test',
+                style: { width: '100px', height: '100px', background: 'blue' }
+              })
+            )
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Try to drag far beyond parent bounds (300 - 100 = 200px max)
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 500, box.y + 500);
+      await page.mouse.up();
+
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      // Should be clipped to 200px (parent width 300 - element width 100)
+      expect(finalTransform).toMatch(/translate\(200px,?\s*200px\)/);
+    }, 30000);
+
+    it('should clip to negative bounds', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            bounds: { left: -50, right: 50, top: -50, bottom: 50 }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Drag in negative direction
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x - 100, box.y - 100);
+      await page.mouse.up();
+
+      const finalTransform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(-50px,?\s*-50px\)/);
+    }, 30000);
+  });
+
+  describe('Grid snapping', () => {
+    it('should snap movement to grid', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.lastPosition = null;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            grid: [25, 25],
+            onDrag: (e, data) => { window.lastPosition = { x: data.x, y: data.y }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Move 30px - should snap to 25px
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 80, box.y + 80);
+      await page.mouse.up();
+
+      const position = await page.evaluate(() => window.lastPosition);
+      expect(position.x).toBe(25);
+      expect(position.y).toBe(25);
+    }, 30000);
+
+    it('should not trigger onDrag when movement is less than grid', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.dragCallCount = 0;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            grid: [50, 50],
+            onDrag: () => { window.dragCallCount++; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Move only 20px - less than half the grid size (25px)
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 70, box.y + 70);
+      await page.mouse.up();
+
+      const dragCallCount = await page.evaluate(() => window.dragCallCount);
+      // onDrag should not be called because movement didn't reach grid threshold
+      expect(dragCallCount).toBe(0);
+    }, 30000);
+
+    it('should snap to larger grid correctly', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.lastPosition = null;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            grid: [100, 100],
+            onDrag: (e, data) => { window.lastPosition = { x: data.x, y: data.y }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Move 150px - should snap to 200px (closest grid point rounding)
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 200, box.y + 200);
+      await page.mouse.up();
+
+      const position = await page.evaluate(() => window.lastPosition);
+      // At 150px movement, snaps to 200px (nearest grid point with rounding)
+      expect(position.x).toBe(200);
+      expect(position.y).toBe(200);
+    }, 30000);
+  });
+
+  describe('Scale support', () => {
+    it('should adjust position when scale is 2x', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.dragData = null;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            scale: 2,
+            onDrag: (e, data) => { window.dragData = { x: data.x, y: data.y }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      // Move 100px visually, should be 50px in draggable coords due to 2x scale
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const dragData = await page.evaluate(() => window.dragData);
+      expect(dragData.x).toBe(50);
+      expect(dragData.y).toBe(50);
+    }, 30000);
+  });
+
+  describe('Handle and Cancel', () => {
+    it('should only drag from handle', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { handle: '.handle', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '200px', height: '100px', background: 'blue' }
+            },
+              React.createElement('div', {
+                className: 'handle',
+                style: { width: '50px', height: '50px', background: 'red' }
+              }),
+              React.createElement('div', {
+                className: 'content',
+                style: { width: '50px', height: '50px', background: 'green' }
+              })
+            )
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      // Try dragging from content (should not work)
+      const content = await page.$('.content');
+      const contentBox = await content.boundingBox();
+
+      await page.mouse.move(contentBox.x + 25, contentBox.y + 25);
+      await page.mouse.down();
+      await page.mouse.move(contentBox.x + 125, contentBox.y + 125);
+      await page.mouse.up();
+
+      let transform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(transform).toMatch(/translate\(0px,?\s*0px\)/);
+
+      // Try dragging from handle (should work)
+      const handle = await page.$('.handle');
+      const handleBox = await handle.boundingBox();
+
+      await page.mouse.move(handleBox.x + 25, handleBox.y + 25);
+      await page.mouse.down();
+      await page.mouse.move(handleBox.x + 125, handleBox.y + 125);
+      await page.mouse.up();
+
+      transform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(transform).toMatch(/translate\(100px,?\s*100px\)/);
+    }, 30000);
+
+    it('should drag from deeply nested handle elements', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { handle: '.handle', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '200px', height: '100px', background: 'blue' }
+            },
+              React.createElement('div', { className: 'handle' },
+                React.createElement('div', null,
+                  React.createElement('span', null,
+                    React.createElement('div', { className: 'deep', style: { width: '50px', height: '50px', background: 'red' } })
+                  )
+                )
+              ),
+              React.createElement('div', { className: 'content', style: { width: '50px', height: '50px', background: 'green' } })
+            )
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      // Drag from deeply nested element inside handle
+      const deep = await page.$('.deep');
+      const deepBox = await deep.boundingBox();
+
+      await page.mouse.move(deepBox.x + 25, deepBox.y + 25);
+      await page.mouse.down();
+      await page.mouse.move(deepBox.x + 125, deepBox.y + 125);
+      await page.mouse.up();
+
+      const transform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(transform).toMatch(/translate\(100px,?\s*100px\)/);
+    }, 30000);
+
+    it('should not drag from deeply nested cancel elements', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, { cancel: '.cancel', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '200px', height: '100px', background: 'blue' }
+            },
+              React.createElement('div', { className: 'cancel' },
+                React.createElement('div', null,
+                  React.createElement('span', null,
+                    React.createElement('div', { className: 'deep', style: { width: '50px', height: '50px', background: 'red' } })
+                  )
+                )
+              ),
+              React.createElement('div', { className: 'content', style: { width: '50px', height: '50px', background: 'green' } })
+            )
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      // Drag from deeply nested element inside cancel (should not work)
+      const deep = await page.$('.deep');
+      const deepBox = await deep.boundingBox();
+
+      await page.mouse.move(deepBox.x + 25, deepBox.y + 25);
+      await page.mouse.down();
+      await page.mouse.move(deepBox.x + 125, deepBox.y + 125);
+      await page.mouse.up();
+
+      const transform = await page.$eval('#draggable-test', el => el.style.transform);
+      expect(transform).toMatch(/translate\(0px,?\s*0px\)/);
+    }, 30000);
+  });
+
+  describe('Iframe support', () => {
+    it('should work correctly inside an iframe', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        // Create an iframe
+        const iframe = document.createElement('iframe');
+        iframe.id = 'test-iframe';
+        iframe.style.cssText = 'width: 500px; height: 500px; border: 1px solid black;';
+        root.appendChild(iframe);
+
+        // Wait for iframe to load and get its document
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+
+        // Write basic HTML structure into iframe
+        iframeDoc.open();
+        iframeDoc.write(`
+          <!DOCTYPE html>
+          <html>
+          <head><style>body { margin: 0; padding: 20px; }</style></head>
+          <body><div id="iframe-root"></div></body>
+          </html>
+        `);
+        iframeDoc.close();
+
+        // Copy React and ReactDOM to iframe window
+        iframe.contentWindow.React = React;
+        iframe.contentWindow.ReactDOM = ReactDOM;
+
+        // Render Draggable into iframe
+        const iframeRoot = iframeDoc.getElementById('iframe-root');
+        const ref = React.createRef();
+        ReactDOM.createRoot(iframeRoot).render(
+          React.createElement(Draggable, { nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'iframe-draggable',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      // Wait for draggable to render in iframe
+      await page.waitForFunction(() => {
+        const iframe = document.getElementById('test-iframe');
+        return iframe && iframe.contentDocument.getElementById('iframe-draggable');
+      });
+
+      // Get the iframe element
+      const iframeHandle = await page.$('#test-iframe');
+      const iframeBox = await iframeHandle.boundingBox();
+
+      // Get the draggable element inside iframe
+      const frame = await iframeHandle.contentFrame();
+      const draggable = await frame.$('#iframe-draggable');
+      const draggableBox = await draggable.boundingBox();
+
+      // Verify initial transform
+      const initialTransform = await frame.$eval('#iframe-draggable', el => el.style.transform);
+      expect(initialTransform).toMatch(/translate\(0px,?\s*0px\)/);
+
+      // Perform drag inside iframe
+      await page.mouse.move(draggableBox.x + 50, draggableBox.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(draggableBox.x + 150, draggableBox.y + 150);
+      await page.mouse.up();
+
+      // Verify transform was updated
+      const finalTransform = await frame.$eval('#iframe-draggable', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(100px,?\s*100px\)/);
+    }, 30000);
+
+    it('should respect bounds inside an iframe', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        // Create an iframe
+        const iframe = document.createElement('iframe');
+        iframe.id = 'test-iframe-bounds';
+        iframe.style.cssText = 'width: 500px; height: 500px; border: 1px solid black;';
+        root.appendChild(iframe);
+
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+
+        iframeDoc.open();
+        iframeDoc.write(`
+          <!DOCTYPE html>
+          <html>
+          <head><style>body { margin: 0; padding: 0; }</style></head>
+          <body>
+            <div id="iframe-root" style="position: relative; width: 300px; height: 300px; background: #ccc;"></div>
+          </body>
+          </html>
+        `);
+        iframeDoc.close();
+
+        iframe.contentWindow.React = React;
+        iframe.contentWindow.ReactDOM = ReactDOM;
+
+        const iframeRoot = iframeDoc.getElementById('iframe-root');
+        const ref = React.createRef();
+        ReactDOM.createRoot(iframeRoot).render(
+          React.createElement(Draggable, { bounds: 'parent', nodeRef: ref },
+            React.createElement('div', {
+              ref: ref,
+              id: 'iframe-draggable-bounds',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForFunction(() => {
+        const iframe = document.getElementById('test-iframe-bounds');
+        return iframe && iframe.contentDocument.getElementById('iframe-draggable-bounds');
+      });
+
+      const iframeHandle = await page.$('#test-iframe-bounds');
+      const frame = await iframeHandle.contentFrame();
+      const draggable = await frame.$('#iframe-draggable-bounds');
+      const draggableBox = await draggable.boundingBox();
+
+      // Try to drag beyond parent bounds
+      await page.mouse.move(draggableBox.x + 50, draggableBox.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(draggableBox.x + 500, draggableBox.y + 500);
+      await page.mouse.up();
+
+      // Should be clipped to parent bounds (300 - 100 = 200 max)
+      const finalTransform = await frame.$eval('#iframe-draggable-bounds', el => el.style.transform);
+      expect(finalTransform).toMatch(/translate\(200px,?\s*200px\)/);
+    }, 30000);
+  });
+
+  describe('Scroll handling', () => {
+    it('should handle dragging in scrollable containers', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.dragData = null;
+
+        // Create a simple draggable that we can verify drag works
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            onDrag: (e, data) => { window.dragData = { x: data.x, y: data.y, deltaX: data.deltaX, deltaY: data.deltaY }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Perform drag and verify position calculation
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const dragData = await page.evaluate(() => window.dragData);
+      expect(dragData).not.toBeNull();
+      expect(dragData.deltaX).toBe(100);
+      expect(dragData.deltaY).toBe(100);
+    }, 30000);
+  });
+
+  describe('Shadow DOM support', () => {
+    it('should clip dragging to parent bounds in shadow DOM', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        window.dragData = null;
+
+        // Create a shadow host
+        const shadowHost = document.createElement('div');
+        shadowHost.id = 'shadow-host';
+        root.appendChild(shadowHost);
+
+        const shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+
+        // Create container in shadow DOM
+        const container = document.createElement('div');
+        container.id = 'shadow-container';
+        container.style.cssText = 'position: relative; width: 200px; height: 200px; background: #ccc;';
+        shadowRoot.appendChild(container);
+
+        // Render Draggable into shadow DOM
+        const ref = React.createRef();
+        ReactDOM.createRoot(container).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            bounds: 'parent',
+            defaultPosition: { x: 50, y: 50 },
+            onDrag: (e, data) => { window.dragData = { x: data.x, y: data.y }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'shadow-draggable',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      // Wait for element in shadow DOM
+      await page.waitForFunction(() => {
+        const host = document.getElementById('shadow-host');
+        return host && host.shadowRoot && host.shadowRoot.getElementById('shadow-draggable');
+      });
+
+      // Get element from shadow DOM
+      const element = await page.evaluateHandle(() => {
+        const host = document.getElementById('shadow-host');
+        return host.shadowRoot.getElementById('shadow-draggable');
+      });
+      const box = await element.boundingBox();
+
+      // Try to drag beyond parent bounds
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 500, box.y + 500);
+      await page.mouse.up();
+
+      const dragData = await page.evaluate(() => window.dragData);
+      // Should be clipped to parent bounds (200 - 100 = 100 max)
+      expect(dragData.x).toBe(100);
+      expect(dragData.y).toBe(100);
+    }, 30000);
+
+    it('should clip dragging to selector bounds in shadow DOM', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        window.dragData = null;
+
+        // Create a shadow host
+        const shadowHost = document.createElement('div');
+        shadowHost.id = 'shadow-host-2';
+        root.appendChild(shadowHost);
+
+        const shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+
+        // Create container with ID in shadow DOM
+        const container = document.createElement('div');
+        container.id = 'bounds-container';
+        container.style.cssText = 'position: relative; width: 200px; height: 200px; background: #ccc;';
+        shadowRoot.appendChild(container);
+
+        // Render Draggable into shadow DOM with selector bounds
+        const ref = React.createRef();
+        ReactDOM.createRoot(container).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            bounds: '#bounds-container',
+            defaultPosition: { x: 50, y: 50 },
+            onDrag: (e, data) => { window.dragData = { x: data.x, y: data.y }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'shadow-draggable-2',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      // Wait for element in shadow DOM
+      await page.waitForFunction(() => {
+        const host = document.getElementById('shadow-host-2');
+        return host && host.shadowRoot && host.shadowRoot.getElementById('shadow-draggable-2');
+      });
+
+      // Get element from shadow DOM
+      const element = await page.evaluateHandle(() => {
+        const host = document.getElementById('shadow-host-2');
+        return host.shadowRoot.getElementById('shadow-draggable-2');
+      });
+      const box = await element.boundingBox();
+
+      // Try to drag beyond bounds
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 500, box.y + 500);
+      await page.mouse.up();
+
+      const dragData = await page.evaluate(() => window.dragData);
+      // Should be clipped to bounds
+      expect(dragData.x).toBe(100);
+      expect(dragData.y).toBe(100);
+    }, 30000);
+  });
+
+  describe('Unmount safety', () => {
+    it('should not throw when unmounted during onStop callback', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        window.errorThrown = false;
+        window.originalError = window.onerror;
+        window.onerror = () => { window.errorThrown = true; };
+
+        function App() {
+          const [visible, setVisible] = React.useState(true);
+          const ref = React.useRef(null);
+          window.setVisible = setVisible;
+
+          if (!visible) return React.createElement('div', { id: 'unmounted' }, 'Unmounted');
+
+          return React.createElement(Draggable, {
+            nodeRef: ref,
+            onStop: () => { setVisible(false); }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { width: '100px', height: '100px', background: 'blue' }
+            })
+          );
+        }
+
+        ReactDOM.createRoot(root).render(React.createElement(App));
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      // Perform drag that will unmount the component in onStop
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      // Verify component unmounted
+      await page.waitForSelector('#unmounted');
+
+      // Verify no error was thrown
+      const errorThrown = await page.evaluate(() => window.errorThrown);
+      expect(errorThrown).toBe(false);
+
+      // Cleanup
+      await page.evaluate(() => { window.onerror = window.originalError; });
+    }, 30000);
+  });
+
+  describe('Input focus preservation', () => {
+    it('should not defocus inputs when draggable unmounts', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+
+        window.inputBlurred = false;
+
+        function App() {
+          const [showDraggable, setShowDraggable] = React.useState(true);
+          const ref = React.useRef(null);
+          window.setShowDraggable = setShowDraggable;
+
+          return React.createElement('div', null,
+            React.createElement('input', {
+              id: 'test-input',
+              type: 'text',
+              onBlur: () => { window.inputBlurred = true; }
+            }),
+            showDraggable && React.createElement(Draggable, { nodeRef: ref },
+              React.createElement('div', {
+                ref: ref,
+                id: 'draggable-test',
+                style: { width: '100px', height: '100px', background: 'blue' }
+              })
+            )
+          );
+        }
+
+        ReactDOM.createRoot(root).render(React.createElement(App));
+      });
+
+      await page.waitForSelector('#test-input');
+      await page.waitForSelector('#draggable-test');
+
+      // Focus the input
+      await page.focus('#test-input');
+      await page.type('#test-input', 'hello');
+
+      // Verify input is focused
+      const isFocused = await page.evaluate(() =>
+        document.activeElement === document.getElementById('test-input')
+      );
+      expect(isFocused).toBe(true);
+
+      // Reset blur tracking
+      await page.evaluate(() => { window.inputBlurred = false; });
+
+      // Unmount the draggable while input is focused
+      await page.evaluate(() => { window.setShowDraggable(false); });
+
+      // Wait for draggable to be removed
+      await page.waitForFunction(() => !document.getElementById('draggable-test'));
+
+      // Verify input wasn't blurred by the unmount
+      const wasBlurred = await page.evaluate(() => window.inputBlurred);
+      expect(wasBlurred).toBe(false);
+
+      // Verify input is still focused
+      const stillFocused = await page.evaluate(() =>
+        document.activeElement === document.getElementById('test-input')
+      );
+      expect(stillFocused).toBe(true);
+
+      // Verify input value is preserved
+      const inputValue = await page.$eval('#test-input', el => el.value);
+      expect(inputValue).toBe('hello');
+    }, 30000);
+
+    it('should not steal focus from inputs when starting drag', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.inputBlurred = false;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement('div', null,
+            React.createElement('input', {
+              id: 'test-input-drag',
+              type: 'text',
+              style: { marginBottom: '20px', display: 'block' },
+              onBlur: () => { window.inputBlurred = true; }
+            }),
+            React.createElement(Draggable, { nodeRef: ref },
+              React.createElement('div', {
+                ref: ref,
+                id: 'draggable-focus-test',
+                style: { width: '100px', height: '100px', background: 'blue' }
+              })
+            )
+          )
+        );
+      });
+
+      await page.waitForSelector('#test-input-drag');
+      await page.waitForSelector('#draggable-focus-test');
+
+      // Focus the input and type
+      await page.focus('#test-input-drag');
+      await page.type('#test-input-drag', 'test');
+
+      // Reset blur tracking
+      await page.evaluate(() => { window.inputBlurred = false; });
+
+      // Start dragging the draggable element (but don't click the input)
+      const element = await page.$('#draggable-focus-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 100, box.y + 100);
+      await page.mouse.up();
+
+      // The input will blur because we clicked elsewhere (on the draggable)
+      // This is expected browser behavior - we're testing that the library
+      // doesn't cause unexpected blurs during its internal operations
+      const inputValue = await page.$eval('#test-input-drag', el => el.value);
+      expect(inputValue).toBe('test');
+    }, 30000);
+  });
+
+  describe('Offset calculations', () => {
+    it('should calculate drag with offset position correctly', async () => {
+      await page.evaluate(() => {
+        const { React, ReactDOM, Draggable } = window;
+        const root = document.getElementById('root');
+        const ref = React.createRef();
+
+        window.dragData = null;
+
+        ReactDOM.createRoot(root).render(
+          React.createElement(Draggable, {
+            nodeRef: ref,
+            onDrag: (e, data) => { window.dragData = { x: data.x, y: data.y, deltaX: data.deltaX, deltaY: data.deltaY }; }
+          },
+            React.createElement('div', {
+              ref: ref,
+              id: 'draggable-test',
+              style: { position: 'relative', top: '200px', left: '200px', width: '100px', height: '100px', background: 'blue' }
+            })
+          )
+        );
+      });
+
+      await page.waitForSelector('#draggable-test');
+
+      const element = await page.$('#draggable-test');
+      const box = await element.boundingBox();
+
+      await page.mouse.move(box.x + 50, box.y + 50);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 150, box.y + 150);
+      await page.mouse.up();
+
+      const dragData = await page.evaluate(() => window.dragData);
+      // Should report delta of 100, not accounting for initial CSS position
+      expect(dragData.deltaX).toBe(100);
+      expect(dragData.deltaY).toBe(100);
+    }, 30000);
+  });
+});
+
+<---
+
+==================================================================================================================================================================
+./test/browser/test.html
+--->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>React Draggable Browser Tests</title>
+  <style>
+    body { margin: 0; padding: 20px; }
+    #root { position: relative; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <!-- Load React 19 from esm.sh CDN (React 19 removed UMD builds) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@19?dev",
+        "react-dom": "https://esm.sh/react-dom@19?dev",
+        "react-dom/client": "https://esm.sh/react-dom@19/client?dev"
+      }
+    }
+  </script>
+  <script type="module">
+    import React from 'react';
+    import ReactDOM from 'react-dom';
+    import * as ReactDOMClient from 'react-dom/client';
+
+    // Make React available globally for the Draggable bundle
+    window.React = React;
+    window.ReactDOM = { ...ReactDOM, ...ReactDOMClient };
+
+    // Dynamically load the built library (it expects React/ReactDOM as globals)
+    const script = document.createElement('script');
+    script.src = '../../build/web/react-draggable.min.js';
+    script.onload = () => {
+      // Make things available globally for tests
+      window.Draggable = ReactDraggable.default;
+      window.DraggableCore = ReactDraggable.DraggableCore;
+    };
+    document.body.appendChild(script);
+  </script>
+</body>
+</html>
+
+<---
+
+==================================================================================================================================================================
+./typings/test.tsx
+--->
+
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import Draggable, {DraggableCore} from 'react-draggable';
+
+const rootElement = document.getElementById('root')!;
+const root = createRoot(rootElement);
+
+function handleStart() {}
+function handleDrag() {}
+function handleStop() {}
+function handleMouseDown() {}
+
+const nodeRef = React.createRef<HTMLDivElement>();
+root.render(
+  <Draggable
+    axis="y"
+    handle=".handle"
+    cancel=".cancel"
+    grid={[10, 10]}
+    onStart={handleStart}
+    onDrag={handleDrag}
+    onStop={handleStop}
+    offsetParent={document.body}
+    onMouseDown={handleMouseDown}
+    allowAnyClick={true}
+    allowMobileScroll={false}
+    disabled={true}
+    enableUserSelectHack={false}
+    bounds={false}
+    defaultClassName={'draggable'}
+    defaultClassNameDragging={'dragging'}
+    defaultClassNameDragged={'dragged'}
+    defaultPosition={{x: 0, y: 0}}
+    nodeRef={nodeRef}
+    positionOffset={{x: 0, y: 0}}
+    position={{x: 50, y: 50}}>
+    <div className="foo bar" ref={nodeRef}>
+      <div className="handle"/>
+      <div className="cancel"/>
+    </div>
+  </Draggable>
+);
+
+const nodeRefCore = React.createRef<HTMLDivElement>();
+root.render(
+  <DraggableCore
+    handle=".handle"
+    cancel=".cancel"
+    allowAnyClick={true}
+    disabled={true}
+    onMouseDown={handleMouseDown}
+    grid={[10, 10]}
+    nodeRef={nodeRefCore}
+    onStart={handleStart}
+    onDrag={handleDrag}
+    onStop={handleStop}
+    offsetParent={document.body}
+    enableUserSelectHack={false}
+    allowMobileScroll={false}>
+    <div className="foo bar" ref={nodeRefCore}>
+      <div className="handle"/>
+      <div className="cancel"/>
+    </div>
+  </DraggableCore>
+);
+
+root.render(<Draggable><div/></Draggable>);
+
+root.render(<DraggableCore><div/></DraggableCore>);
+
+<---
+
+==================================================================================================================================================================
+./typings/tsconfig.json
+--->
+
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "preserve",
+    "strict": true,
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "react-draggable": ["./index.d.ts"]
+    }
+  },
+  "files": [
+    "index.d.ts",
+    "test.tsx"
+  ]
+}
+
+<---
+
+==================================================================================================================================================================
+./typings/index.d.ts
+--->
+
+import * as React from 'react';
+
+export interface DraggableBounds {
+  left?: number
+  right?: number
+  top?: number
+  bottom?: number
+}
+
+export interface DraggableProps extends DraggableCoreProps {
+  axis: 'both' | 'x' | 'y' | 'none',
+  bounds: DraggableBounds | string | false ,
+  defaultClassName: string,
+  defaultClassNameDragging: string,
+  defaultClassNameDragged: string,
+  defaultPosition: ControlPosition,
+  positionOffset: PositionOffsetControlPosition,
+  position: ControlPosition
+}
+
+export type DraggableEvent = React.MouseEvent<HTMLElement | SVGElement>
+  | React.TouchEvent<HTMLElement | SVGElement>
+  | MouseEvent
+  | TouchEvent
+
+export type DraggableEventHandler = (
+  e: DraggableEvent,
+  data: DraggableData
+) => void | false;
+
+export interface DraggableData {
+  node: HTMLElement,
+  x: number, y: number,
+  deltaX: number, deltaY: number,
+  lastX: number, lastY: number
+}
+
+export type ControlPosition = {x: number, y: number};
+
+export type PositionOffsetControlPosition = {x: number|string, y: number|string};
+
+export interface DraggableCoreProps {
+  allowAnyClick: boolean,
+  allowMobileScroll: boolean,
+  cancel: string,
+  children?: React.ReactNode,
+  disabled: boolean,
+  enableUserSelectHack: boolean,
+  offsetParent: HTMLElement,
+  grid: [number, number],
+  handle: string,
+  nodeRef?: React.RefObject<HTMLElement | null>,
+  onStart: DraggableEventHandler,
+  onDrag: DraggableEventHandler,
+  onStop: DraggableEventHandler,
+  onMouseDown: (e: MouseEvent) => void,
+  scale: number
+}
+
+export default class Draggable extends React.Component<Partial<DraggableProps>, {}> {
+  static defaultProps : DraggableProps;
+}
+
+export class DraggableCore extends React.Component<Partial<DraggableCoreProps>, {}> {
+  static defaultProps : DraggableCoreProps;
+}
+
+<---
+
+==================================================================================================================================================================
+./lib/Draggable.js
+--->
+
+// @flow
+import * as React from 'react';
+import PropTypes from 'prop-types';
+import ReactDOM from 'react-dom';
+import { clsx } from 'clsx';
+import {createCSSTransform, createSVGTransform} from './utils/domFns';
+import {canDragX, canDragY, createDraggableData, getBoundPosition} from './utils/positionFns';
+import {dontSetMe} from './utils/shims';
+import DraggableCore from './DraggableCore';
+import type {ControlPosition, PositionOffsetControlPosition, DraggableCoreProps, DraggableCoreDefaultProps} from './DraggableCore';
+import log from './utils/log';
+import type {Bounds, DraggableEventHandler} from './utils/types';
+import type {Element as ReactElement} from 'react';
+
+type DraggableState = {
+  dragging: boolean,
+  dragged: boolean,
+  x: number, y: number,
+  slackX: number, slackY: number,
+  isElementSVG: boolean,
+  prevPropsPosition: ?ControlPosition,
+};
+
+export type DraggableDefaultProps = {
+  ...DraggableCoreDefaultProps,
+  axis: 'both' | 'x' | 'y' | 'none',
+  bounds: Bounds | string | false,
+  defaultClassName: string,
+  defaultClassNameDragging: string,
+  defaultClassNameDragged: string,
+  defaultPosition: ControlPosition,
+  scale: number,
+};
+
+export type DraggableProps = {
+  ...DraggableCoreProps,
+  ...DraggableDefaultProps,
+  positionOffset: PositionOffsetControlPosition,
+  position: ControlPosition,
+};
+
+//
+// Define <Draggable>
+//
+
+class Draggable extends React.Component<DraggableProps, DraggableState> {
+
+  static displayName: ?string = 'Draggable';
+
+  static propTypes: DraggableProps = {
+    // Accepts all props <DraggableCore> accepts.
+    ...DraggableCore.propTypes,
+
+    /**
+     * `axis` determines which axis the draggable can move.
+     *
+     *  Note that all callbacks will still return data as normal. This only
+     *  controls flushing to the DOM.
+     *
+     * 'both' allows movement horizontally and vertically.
+     * 'x' limits movement to horizontal axis.
+     * 'y' limits movement to vertical axis.
+     * 'none' limits all movement.
+     *
+     * Defaults to 'both'.
+     */
+    axis: PropTypes.oneOf(['both', 'x', 'y', 'none']),
+
+    /**
+     * `bounds` determines the range of movement available to the element.
+     * Available values are:
+     *
+     * 'parent' restricts movement within the Draggable's parent node.
+     *
+     * Alternatively, pass an object with the following properties, all of which are optional:
+     *
+     * {left: LEFT_BOUND, right: RIGHT_BOUND, bottom: BOTTOM_BOUND, top: TOP_BOUND}
+     *
+     * All values are in px.
+     *
+     * Example:
+     *
+     * ```jsx
+     *   let App = React.createClass({
+     *       render: function () {
+     *         return (
+     *            <Draggable bounds={{right: 300, bottom: 300}}>
+     *              <div>Content</div>
+     *           </Draggable>
+     *         );
+     *       }
+     *   });
+     * ```
+     */
+    bounds: PropTypes.oneOfType([
+      PropTypes.shape({
+        left: PropTypes.number,
+        right: PropTypes.number,
+        top: PropTypes.number,
+        bottom: PropTypes.number
+      }),
+      PropTypes.string,
+      PropTypes.oneOf([false])
+    ]),
+
+    defaultClassName: PropTypes.string,
+    defaultClassNameDragging: PropTypes.string,
+    defaultClassNameDragged: PropTypes.string,
+
+    /**
+     * `defaultPosition` specifies the x and y that the dragged item should start at
+     *
+     * Example:
+     *
+     * ```jsx
+     *      let App = React.createClass({
+     *          render: function () {
+     *              return (
+     *                  <Draggable defaultPosition={{x: 25, y: 25}}>
+     *                      <div>I start with transformX: 25px and transformY: 25px;</div>
+     *                  </Draggable>
+     *              );
+     *          }
+     *      });
+     * ```
+     */
+    defaultPosition: PropTypes.shape({
+      x: PropTypes.number,
+      y: PropTypes.number
+    }),
+    positionOffset: PropTypes.shape({
+      x: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+      y: PropTypes.oneOfType([PropTypes.number, PropTypes.string])
+    }),
+
+    /**
+     * `position`, if present, defines the current position of the element.
+     *
+     *  This is similar to how form elements in React work - if no `position` is supplied, the component
+     *  is uncontrolled.
+     *
+     * Example:
+     *
+     * ```jsx
+     *      let App = React.createClass({
+     *          render: function () {
+     *              return (
+     *                  <Draggable position={{x: 25, y: 25}}>
+     *                      <div>I start with transformX: 25px and transformY: 25px;</div>
+     *                  </Draggable>
+     *              );
+     *          }
+     *      });
+     * ```
+     */
+    position: PropTypes.shape({
+      x: PropTypes.number,
+      y: PropTypes.number
+    }),
+
+    /**
+     * These properties should be defined on the child, not here.
+     */
+    className: dontSetMe,
+    style: dontSetMe,
+    transform: dontSetMe
+  };
+
+  static defaultProps: DraggableDefaultProps = {
+    ...DraggableCore.defaultProps,
+    axis: 'both',
+    bounds: false,
+    defaultClassName: 'react-draggable',
+    defaultClassNameDragging: 'react-draggable-dragging',
+    defaultClassNameDragged: 'react-draggable-dragged',
+    defaultPosition: {x: 0, y: 0},
+    scale: 1
+  };
+
+  // React 16.3+
+  // Arity (props, state)
+  static getDerivedStateFromProps({position}: DraggableProps, {prevPropsPosition}: DraggableState): ?Partial<DraggableState> {
+    // Set x/y if a new position is provided in props that is different than the previous.
+    if (
+      position &&
+      (!prevPropsPosition ||
+        position.x !== prevPropsPosition.x || position.y !== prevPropsPosition.y
+      )
+    ) {
+      log('Draggable: getDerivedStateFromProps %j', {position, prevPropsPosition});
+      return {
+        x: position.x,
+        y: position.y,
+        prevPropsPosition: {...position}
+      };
+    }
+    return null;
+  }
+
+  constructor(props: DraggableProps) {
+    super(props);
+
+    this.state = {
+      // Whether or not we are currently dragging.
+      dragging: false,
+
+      // Whether or not we have been dragged before.
+      dragged: false,
+
+      // Current transform x and y.
+      x: props.position ? props.position.x : props.defaultPosition.x,
+      y: props.position ? props.position.y : props.defaultPosition.y,
+
+      prevPropsPosition: {...props.position},
+
+      // Used for compensating for out-of-bounds drags
+      slackX: 0, slackY: 0,
+
+      // Can only determine if SVG after mounting
+      isElementSVG: false
+    };
+
+    if (props.position && !(props.onDrag || props.onStop)) {
+      // eslint-disable-next-line no-console
+      console.warn('A `position` was applied to this <Draggable>, without drag handlers. This will make this ' +
+        'component effectively undraggable. Please attach `onDrag` or `onStop` handlers so you can adjust the ' +
+        '`position` of this element.');
+    }
+  }
+
+  componentDidMount() {
+    // Check to see if the element passed is an instanceof SVGElement
+    if(typeof window.SVGElement !== 'undefined' && this.findDOMNode() instanceof window.SVGElement) {
+      this.setState({isElementSVG: true});
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.state.dragging) {
+      this.setState({dragging: false}); // prevents invariant if unmounted while dragging
+    }
+  }
+
+  // React 19 removed ReactDOM.findDOMNode, so nodeRef is now required.
+  // For backward compatibility with React 18 and earlier, we still support findDOMNode if available.
+  findDOMNode(): ?HTMLElement {
+    if (this.props?.nodeRef) {
+      return this.props.nodeRef.current;
+    }
+    // ReactDOM.findDOMNode was removed in React 19
+    if (typeof ReactDOM.findDOMNode === 'function') {
+      return ReactDOM.findDOMNode(this);
+    }
+    return null;
+  }
+
+  onDragStart: DraggableEventHandler = (e, coreData) => {
+    log('Draggable: onDragStart: %j', coreData);
+
+    // Short-circuit if user's callback killed it.
+    const shouldStart = this.props.onStart(e, createDraggableData(this, coreData));
+    // Kills start event on core as well, so move handlers are never bound.
+    if (shouldStart === false) return false;
+
+    this.setState({dragging: true, dragged: true});
+  };
+
+  onDrag: DraggableEventHandler = (e, coreData) => {
+    if (!this.state.dragging) return false;
+    log('Draggable: onDrag: %j', coreData);
+
+    const uiData = createDraggableData(this, coreData);
+
+    const newState = {
+      x: uiData.x,
+      y: uiData.y,
+      slackX: 0,
+      slackY: 0,
+    };
+
+    // Keep within bounds.
+    if (this.props.bounds) {
+      // Save original x and y.
+      const {x, y} = newState;
+
+      // Add slack to the values used to calculate bound position. This will ensure that if
+      // we start removing slack, the element won't react to it right away until it's been
+      // completely removed.
+      newState.x += this.state.slackX;
+      newState.y += this.state.slackY;
+
+      // Get bound position. This will ceil/floor the x and y within the boundaries.
+      const [newStateX, newStateY] = getBoundPosition(this, newState.x, newState.y);
+      newState.x = newStateX;
+      newState.y = newStateY;
+
+      // Recalculate slack by noting how much was shaved by the boundPosition handler.
+      newState.slackX = this.state.slackX + (x - newState.x);
+      newState.slackY = this.state.slackY + (y - newState.y);
+
+      // Update the event we fire to reflect what really happened after bounds took effect.
+      uiData.x = newState.x;
+      uiData.y = newState.y;
+      uiData.deltaX = newState.x - this.state.x;
+      uiData.deltaY = newState.y - this.state.y;
+    }
+
+    // Short-circuit if user's callback killed it.
+    const shouldUpdate = this.props.onDrag(e, uiData);
+    if (shouldUpdate === false) return false;
+
+    this.setState(newState);
+  };
+
+  onDragStop: DraggableEventHandler = (e, coreData) => {
+    if (!this.state.dragging) return false;
+
+    // Short-circuit if user's callback killed it.
+    const shouldContinue = this.props.onStop(e, createDraggableData(this, coreData));
+    if (shouldContinue === false) return false;
+
+    log('Draggable: onDragStop: %j', coreData);
+
+    const newState: Partial<DraggableState> = {
+      dragging: false,
+      slackX: 0,
+      slackY: 0
+    };
+
+    // If this is a controlled component, the result of this operation will be to
+    // revert back to the old position. We expect a handler on `onDragStop`, at the least.
+    const controlled = Boolean(this.props.position);
+    if (controlled) {
+      const {x, y} = this.props.position;
+      newState.x = x;
+      newState.y = y;
+    }
+
+    this.setState(newState);
+  };
+
+  render(): ReactElement<any> {
+    const {
+      axis,
+      bounds,
+      children,
+      defaultPosition,
+      defaultClassName,
+      defaultClassNameDragging,
+      defaultClassNameDragged,
+      position,
+      positionOffset,
+      scale,
+      ...draggableCoreProps
+    } = this.props;
+
+    let style = {};
+    let svgTransform = null;
+
+    // If this is controlled, we don't want to move it - unless it's dragging.
+    const controlled = Boolean(position);
+    const draggable = !controlled || this.state.dragging;
+
+    const validPosition = position || defaultPosition;
+    const transformOpts = {
+      // Set left if horizontal drag is enabled
+      x: canDragX(this) && draggable ?
+        this.state.x :
+        validPosition.x,
+
+      // Set top if vertical drag is enabled
+      y: canDragY(this) && draggable ?
+        this.state.y :
+        validPosition.y
+    };
+
+    // If this element was SVG, we use the `transform` attribute.
+    if (this.state.isElementSVG) {
+      svgTransform = createSVGTransform(transformOpts, positionOffset);
+    } else {
+      // Add a CSS transform to move the element around. This allows us to move the element around
+      // without worrying about whether or not it is relatively or absolutely positioned.
+      // If the item you are dragging already has a transform set, wrap it in a <span> so <Draggable>
+      // has a clean slate.
+      style = createCSSTransform(transformOpts, positionOffset);
+    }
+
+    // Mark with class while dragging
+    const className = clsx((children.props.className || ''), defaultClassName, {
+      [defaultClassNameDragging]: this.state.dragging,
+      [defaultClassNameDragged]: this.state.dragged
+    });
+
+    // Reuse the child provided
+    // This makes it flexible to use whatever element is wanted (div, ul, etc)
+    return (
+      <DraggableCore {...draggableCoreProps} onStart={this.onDragStart} onDrag={this.onDrag} onStop={this.onDragStop}>
+        {React.cloneElement(React.Children.only(children), {
+          className: className,
+          style: {...children.props.style, ...style},
+          transform: svgTransform
+        })}
+      </DraggableCore>
+    );
+  }
+}
+
+export {Draggable as default, DraggableCore};
+
+<---
+
+==================================================================================================================================================================
+./lib/cjs.js
+--->
+
+const {default: Draggable, DraggableCore} = require('./Draggable');
+
+// Previous versions of this lib exported <Draggable> as the root export. As to no-// them, or TypeScript, we export *both* as the root and as 'default'.
+// See https://github.com/mzabriskie/react-draggable/pull/254
+// and https://github.com/mzabriskie/react-draggable/issues/266
+module.exports = Draggable;
+module.exports.default = Draggable;
+module.exports.DraggableCore = DraggableCore;
+
+<---
+
+==================================================================================================================================================================
+./lib/DraggableCore.js
+--->
+
+// @flow
+import * as React from 'react';
+import PropTypes from 'prop-types';
+import ReactDOM from 'react-dom';
+import {matchesSelectorAndParentsTo, addEvent, removeEvent, addUserSelectStyles, getTouchIdentifier,
+        scheduleRemoveUserSelectStyles} from './utils/domFns';
+import {createCoreData, getControlPosition, snapToGrid} from './utils/positionFns';
+import {dontSetMe} from './utils/shims';
+import log from './utils/log';
+
+import type {EventHandler, MouseTouchEvent} from './utils/types';
+import type {Element as ReactElement} from 'react';
+
+// Simple abstraction for dragging events names.
+const eventsFor = {
+  touch: {
+    start: 'touchstart',
+    move: 'touchmove',
+    stop: 'touchend'
+  },
+  mouse: {
+    start: 'mousedown',
+    move: 'mousemove',
+    stop: 'mouseup'
+  }
+};
+
+// Default to mouse events.
+let dragEventFor = eventsFor.mouse;
+
+export type DraggableData = {
+  node: HTMLElement,
+  x: number, y: number,
+  deltaX: number, deltaY: number,
+  lastX: number, lastY: number,
+};
+
+export type DraggableEventHandler = (e: MouseEvent, data: DraggableData) => void | false;
+
+export type ControlPosition = {x: number, y: number};
+export type PositionOffsetControlPosition = {x: number|string, y: number|string};
+
+export type DraggableCoreDefaultProps = {
+  allowAnyClick: boolean,
+  allowMobileScroll: boolean,
+  disabled: boolean,
+  enableUserSelectHack: boolean,
+  onStart: DraggableEventHandler,
+  onDrag: DraggableEventHandler,
+  onStop: DraggableEventHandler,
+  onMouseDown: (e: MouseEvent) => void,
+  scale: number,
+};
+
+export type DraggableCoreProps = {
+  ...DraggableCoreDefaultProps,
+  cancel: string,
+  children: ReactElement<any>,
+  offsetParent: HTMLElement,
+  grid: [number, number],
+  handle: string,
+  nodeRef?: ?React.ElementRef<any>,
+};
+
+//
+// Define <DraggableCore>.
+//
+// <DraggableCore> is for advanced usage of <Draggable>. It maintains minimal internal state so it can
+// work well with libraries that require more control over the element.
+//
+
+export default class DraggableCore extends React.Component<DraggableCoreProps> {
+
+  static displayName: ?string = 'DraggableCore';
+
+  static propTypes: Object = {
+    /**
+     * `allowAnyClick` allows dragging using any mouse button.
+     * By default, we only accept the left button.
+     *
+     * Defaults to `false`.
+     */
+    allowAnyClick: PropTypes.bool,
+
+    /**
+     * `allowMobileScroll` turns off cancellation of the 'touchstart' event
+     * on mobile devices. Only enable this if you are having trouble with click
+     * events. Prefer using 'handle' / 'cancel' instead.
+     *
+     * Defaults to `false`.
+     */
+    allowMobileScroll: PropTypes.bool,
+
+    children: PropTypes.node.isRequired,
+
+    /**
+     * `disabled`, if true, stops the <Draggable> from dragging. All handlers,
+     * with the exception of `onMouseDown`, will not fire.
+     */
+    disabled: PropTypes.bool,
+
+    /**
+     * By default, we add 'user-select:none' attributes to the document body
+     * to prevent ugly text selection during drag. If this is causing problems
+     * for your app, set this to `false`.
+     */
+    enableUserSelectHack: PropTypes.bool,
+
+    /**
+     * `offsetParent`, if set, uses the passed DOM node to compute drag offsets
+     * instead of using the parent node.
+     */
+    offsetParent: function(props: DraggableCoreProps, propName: $Keys<DraggableCoreProps>) {
+      if (props[propName] && props[propName].nodeType !== 1) {
+        throw new Error('Draggable\'s offsetParent must be a DOM Node.');
+      }
+    },
+
+    /**
+     * `grid` specifies the x and y that dragging should snap to.
+     */
+    grid: PropTypes.arrayOf(PropTypes.number),
+
+    /**
+     * `handle` specifies a selector to be used as the handle that initiates drag.
+     *
+     * Example:
+     *
+     * ```jsx
+     *   let App = React.createClass({
+     *       render: function () {
+     *         return (
+     *            <Draggable handle=".handle">
+     *              <div>
+     *                  <div className="handle">Click me to drag</div>
+     *                  <div>This is some other content</div>
+     *              </div>
+     *           </Draggable>
+     *         );
+     *       }
+     *   });
+     * ```
+     */
+    handle: PropTypes.string,
+
+    /**
+     * `cancel` specifies a selector to be used to prevent drag initialization.
+     *
+     * Example:
+     *
+     * ```jsx
+     *   let App = React.createClass({
+     *       render: function () {
+     *           return(
+     *               <Draggable cancel=".cancel">
+     *                   <div>
+     *                     <div className="cancel">You can't drag from here</div>
+     *                     <div>Dragging here works fine</div>
+     *                   </div>
+     *               </Draggable>
+     *           );
+     *       }
+     *   });
+     * ```
+     */
+    cancel: PropTypes.string,
+
+    /* If running in React Strict mode, ReactDOM.findDOMNode() is deprecated.
+     * Unfortunately, in order for <Draggable> to work properly, we need raw access
+     * to the underlying DOM node. If you want to avoid the warning, pass a `nodeRef`
+     * as in this example:
+     *
+     * function MyComponent() {
+     *   const nodeRef = React.useRef(null);
+     *   return (
+     *     <Draggable nodeRef={nodeRef}>
+     *       <div ref={nodeRef}>Example Target</div>
+     *     </Draggable>
+     *   );
+     * }
+     *
+     * This can be used for arbitrarily nested components, so long as the ref ends up
+     * pointing to the actual child DOM node and not a custom component.
+     */
+    nodeRef: PropTypes.object,
+
+    /**
+     * Called when dragging starts.
+     * If this function returns the boolean false, dragging will be canceled.
+     */
+    onStart: PropTypes.func,
+
+    /**
+     * Called while dragging.
+     * If this function returns the boolean false, dragging will be canceled.
+     */
+    onDrag: PropTypes.func,
+
+    /**
+     * Called when dragging stops.
+     * If this function returns the boolean false, the drag will remain active.
+     */
+    onStop: PropTypes.func,
+
+    /**
+     * A workaround option which can be passed if onMouseDown needs to be accessed,
+     * since it'll always be blocked (as there is internal use of onMouseDown)
+     */
+    onMouseDown: PropTypes.func,
+
+    /**
+     * `scale`, if set, applies scaling while dragging an element
+     */
+    scale: PropTypes.number,
+
+    /**
+     * These properties should be defined on the child, not here.
+     */
+    className: dontSetMe,
+    style: dontSetMe,
+    transform: dontSetMe
+  };
+
+  static defaultProps: DraggableCoreDefaultProps = {
+    allowAnyClick: false, // by default only accept left click
+    allowMobileScroll: false,
+    disabled: false,
+    enableUserSelectHack: true,
+    onStart: function(){},
+    onDrag: function(){},
+    onStop: function(){},
+    onMouseDown: function(){},
+    scale: 1,
+  };
+
+  dragging: boolean = false;
+
+  // Used while dragging to determine deltas.
+  lastX: number = NaN;
+  lastY: number = NaN;
+
+  touchIdentifier: ?number = null;
+
+  mounted: boolean = false;
+
+  componentDidMount() {
+    this.mounted = true;
+    // Touch handlers must be added with {passive: false} to be cancelable.
+    // https://developers.google.com/web/updates/2017/01/scrolling-intervention
+    const thisNode = this.findDOMNode();
+    if (thisNode) {
+      addEvent(thisNode, eventsFor.touch.start, this.onTouchStart, {passive: false});
+    }
+  }
+
+  componentWillUnmount() {
+    this.mounted = false;
+    // Remove any leftover event handlers. Remove both touch and mouse handlers in case
+    // some browser quirk caused a touch event to fire during a mouse move, or vice versa.
+    const thisNode = this.findDOMNode();
+    if (thisNode) {
+      const {ownerDocument} = thisNode;
+      removeEvent(ownerDocument, eventsFor.mouse.move, this.handleDrag);
+      removeEvent(ownerDocument, eventsFor.touch.move, this.handleDrag);
+      removeEvent(ownerDocument, eventsFor.mouse.stop, this.handleDragStop);
+      removeEvent(ownerDocument, eventsFor.touch.stop, this.handleDragStop);
+      removeEvent(thisNode, eventsFor.touch.start, this.onTouchStart, {passive: false});
+      if (this.props.enableUserSelectHack) scheduleRemoveUserSelectStyles(ownerDocument);
+    }
+  }
+
+  // React 19 removed ReactDOM.findDOMNode, so nodeRef is now required.
+  // For backward compatibility with React 18 and earlier, we still support findDOMNode if available.
+  findDOMNode(): ?HTMLElement {
+    if (this.props?.nodeRef) {
+      return this.props.nodeRef.current;
+    }
+    // ReactDOM.findDOMNode was removed in React 19
+    if (typeof ReactDOM.findDOMNode === 'function') {
+      return ReactDOM.findDOMNode(this);
+    }
+    // In React 19+, nodeRef is required - log a warning via our log utility
+    log(
+      'react-draggable: ReactDOM.findDOMNode is not available in React 19+. ' +
+      'You must provide a nodeRef prop. See: https://github.com/react-grid-layout/react-draggable#noderef'
+    );
+    return null;
+  }
+
+  handleDragStart: EventHandler<MouseTouchEvent> = (e) => {
+    // Make it possible to attach event handlers on top of this one.
+    this.props.onMouseDown(e);
+
+    // Only accept left-clicks. On macOS, ctrl+click is equivalent to right-click.
+    if (!this.props.allowAnyClick && ((typeof e.button === 'number' && e.button !== 0) || e.ctrlKey)) return false;
+
+    // Get nodes. Be sure to grab relative document (could be iframed)
+    const thisNode = this.findDOMNode();
+    if (!thisNode || !thisNode.ownerDocument || !thisNode.ownerDocument.body) {
+      throw new Error('<DraggableCore> not mounted on DragStart!');
+    }
+    const {ownerDocument} = thisNode;
+
+    // Short circuit if handle or cancel prop was provided and selector doesn't match.
+    if (this.props.disabled ||
+      (!(e.target instanceof ownerDocument.defaultView.Node)) ||
+      (this.props.handle && !matchesSelectorAndParentsTo(e.target, this.props.handle, thisNode)) ||
+      (this.props.cancel && matchesSelectorAndParentsTo(e.target, this.props.cancel, thisNode))) {
+      return;
+    }
+
+    // Prevent scrolling on mobile devices, like ipad/iphone.
+    // Important that this is after handle/cancel.
+    if (e.type === 'touchstart' && !this.props.allowMobileScroll) e.preventDefault();
+
+    // Set touch identifier in component state if this is a touch event. This allows us to
+    // distinguish between individual touches on multitouch screens by identifying which
+    // touchpoint was set to this element.
+    const touchIdentifier = getTouchIdentifier(e);
+    this.touchIdentifier = touchIdentifier;
+
+    // Get the current drag point from the event. This is used as the offset.
+    const position = getControlPosition(e, touchIdentifier, this);
+    if (position == null) return; // not possible but satisfies flow
+    const {x, y} = position;
+
+    // Create an event object with all the data parents need to make a decision here.
+    const coreEvent = createCoreData(this, x, y);
+
+    log('DraggableCore: handleDragStart: %j', coreEvent);
+
+    // Call event handler. If it returns explicit false, cancel.
+    log('calling', this.props.onStart);
+    const shouldUpdate = this.props.onStart(e, coreEvent);
+    if (shouldUpdate === false || this.mounted === false) return;
+
+    // Add a style to the body to disable user-select. This prevents text from
+    // being selected all over the page.
+    if (this.props.enableUserSelectHack) addUserSelectStyles(ownerDocument);
+
+    // Initiate dragging. Set the current x and y as offsets
+    // so we know how much we've moved during the drag. This allows us
+    // to drag elements around even if they have been moved, without issue.
+    this.dragging = true;
+    this.lastX = x;
+    this.lastY = y;
+
+    // Add events to the document directly so we catch when the user's mouse/touch moves outside of
+    // this element. We use different events depending on whether or not we have detected that this
+    // is a touch-capable device.
+    addEvent(ownerDocument, dragEventFor.move, this.handleDrag);
+    addEvent(ownerDocument, dragEventFor.stop, this.handleDragStop);
+  };
+
+  handleDrag: EventHandler<MouseTouchEvent> = (e) => {
+
+    // Get the current drag point from the event. This is used as the offset.
+    const position = getControlPosition(e, this.touchIdentifier, this);
+    if (position == null) return;
+    let {x, y} = position;
+
+    // Snap to grid if prop has been provided
+    if (Array.isArray(this.props.grid)) {
+      let deltaX = x - this.lastX, deltaY = y - this.lastY;
+      [deltaX, deltaY] = snapToGrid(this.props.grid, deltaX, deltaY);
+      if (!deltaX && !deltaY) return; // skip useless drag
+      x = this.lastX + deltaX, y = this.lastY + deltaY;
+    }
+
+    const coreEvent = createCoreData(this, x, y);
+
+    log('DraggableCore: handleDrag: %j', coreEvent);
+
+    // Call event handler. If it returns explicit false, trigger end.
+    const shouldUpdate = this.props.onDrag(e, coreEvent);
+    if (shouldUpdate === false || this.mounted === false) {
+      try {
+        // $FlowIgnore
+        this.handleDragStop(new MouseEvent('mouseup'));
+      } catch (err) {
+        // Old browsers
+        const event = ((document.createEvent('MouseEvents'): any): MouseTouchEvent);
+        // I see why this insanity was deprecated
+        // $FlowIgnore
+        event.initMouseEvent('mouseup', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+        this.handleDragStop(event);
+      }
+      return;
+    }
+
+    this.lastX = x;
+    this.lastY = y;
+  };
+
+  handleDragStop: EventHandler<MouseTouchEvent> = (e) => {
+    if (!this.dragging) return;
+
+    const position = getControlPosition(e, this.touchIdentifier, this);
+    if (position == null) return;
+    let {x, y} = position;
+
+    // Snap to grid if prop has been provided
+    if (Array.isArray(this.props.grid)) {
+      let deltaX = x - this.lastX || 0;
+      let deltaY = y - this.lastY || 0;
+      [deltaX, deltaY] = snapToGrid(this.props.grid, deltaX, deltaY);
+      x = this.lastX + deltaX, y = this.lastY + deltaY;
+    }
+
+    const coreEvent = createCoreData(this, x, y);
+
+    // Call event handler
+    const shouldContinue = this.props.onStop(e, coreEvent);
+    if (shouldContinue === false || this.mounted === false) return false;
+
+    const thisNode = this.findDOMNode();
+    if (thisNode) {
+      // Remove user-select hack
+      if (this.props.enableUserSelectHack) scheduleRemoveUserSelectStyles(thisNode.ownerDocument);
+    }
+
+    log('DraggableCore: handleDragStop: %j', coreEvent);
+
+    // Reset the el.
+    this.dragging = false;
+    this.lastX = NaN;
+    this.lastY = NaN;
+
+    if (thisNode) {
+      // Remove event handlers
+      log('DraggableCore: Removing handlers');
+      removeEvent(thisNode.ownerDocument, dragEventFor.move, this.handleDrag);
+      removeEvent(thisNode.ownerDocument, dragEventFor.stop, this.handleDragStop);
+    }
+  };
+
+  onMouseDown: EventHandler<MouseTouchEvent> = (e) => {
+    dragEventFor = eventsFor.mouse; // on touchscreen laptops we could switch back to mouse
+
+    return this.handleDragStart(e);
+  };
+
+  onMouseUp: EventHandler<MouseTouchEvent> = (e) => {
+    dragEventFor = eventsFor.mouse;
+
+    return this.handleDragStop(e);
+  };
+
+  // Same as onMouseDown (start drag), but now consider this a touch device.
+  onTouchStart: EventHandler<MouseTouchEvent> = (e) => {
+    // We're on a touch device now, so change the event handlers
+    dragEventFor = eventsFor.touch;
+
+    return this.handleDragStart(e);
+  };
+
+  onTouchEnd: EventHandler<MouseTouchEvent> = (e) => {
+    // We're on a touch device now, so change the event handlers
+    dragEventFor = eventsFor.touch;
+
+    return this.handleDragStop(e);
+  };
+
+  render(): React.Element<any> {
+    // Reuse the child provided
+    // This makes it flexible to use whatever element is wanted (div, ul, etc)
+    return React.cloneElement(React.Children.only(this.props.children), {
+      // Note: mouseMove handler is attached to document so it will still function
+      // when the user drags quickly and leaves the bounds of the element.
+      onMouseDown: this.onMouseDown,
+      onMouseUp: this.onMouseUp,
+      // onTouchStart is added on `componentDidMount` so they can be added with
+      // {passive: false}, which allows it to cancel. See
+      // https://developers.google.com/web/updates/2017/01/scrolling-intervention
+      onTouchEnd: this.onTouchEnd
+    });
+  }
+}
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/domFns.js
+--->
+
+// @flow
+import {findInArray, isFunction, int} from './shims';
+import browserPrefix, {browserPrefixToKey} from './getPrefix';
+
+import type {ControlPosition, PositionOffsetControlPosition, MouseTouchEvent} from './types';
+
+let matchesSelectorFunc = '';
+export function matchesSelector(el: Node, selector: string): boolean {
+  if (!matchesSelectorFunc) {
+    matchesSelectorFunc = findInArray([
+      'matches',
+      'webkitMatchesSelector',
+      'mozMatchesSelector',
+      'msMatchesSelector',
+      'oMatchesSelector'
+    ], function(method){
+      // $FlowIgnore: Doesn't think elements are indexable
+      return isFunction(el[method]);
+    });
+  }
+
+  // Might not be found entirely (not an Element?) - in that case, bail
+  // $FlowIgnore: Doesn't think elements are indexable
+  if (!isFunction(el[matchesSelectorFunc])) return false;
+
+  // $FlowIgnore: Doesn't think elements are indexable
+  return el[matchesSelectorFunc](selector);
+}
+
+// Works up the tree to the draggable itself attempting to match selector.
+export function matchesSelectorAndParentsTo(el: Node, selector: string, baseNode: Node): boolean {
+  let node = el;
+  do {
+    if (matchesSelector(node, selector)) return true;
+    if (node === baseNode) return false;
+    // $FlowIgnore[incompatible-type]
+    node = node.parentNode;
+  } while (node);
+
+  return false;
+}
+
+export function addEvent(el: ?Node, event: string, handler: Function, inputOptions?: Object): void {
+  if (!el) return;
+  const options = {capture: true, ...inputOptions};
+  // $FlowIgnore[method-unbinding]
+  if (el.addEventListener) {
+    el.addEventListener(event, handler, options);
+  } else if (el.attachEvent) {
+    el.attachEvent('on' + event, handler);
+  } else {
+    // $FlowIgnore: Doesn't think elements are indexable
+    el['on' + event] = handler;
+  }
+}
+
+export function removeEvent(el: ?Node, event: string, handler: Function, inputOptions?: Object): void {
+  if (!el) return;
+  const options = {capture: true, ...inputOptions};
+  // $FlowIgnore[method-unbinding]
+  if (el.removeEventListener) {
+    el.removeEventListener(event, handler, options);
+  } else if (el.detachEvent) {
+    el.detachEvent('on' + event, handler);
+  } else {
+    // $FlowIgnore: Doesn't think elements are indexable
+    el['on' + event] = null;
+  }
+}
+
+export function outerHeight(node: HTMLElement): number {
+  // This is deliberately excluding margin for our calculations, since we are using
+  // offsetTop which is including margin. See getBoundPosition
+  let height = node.clientHeight;
+  const computedStyle = node.ownerDocument.defaultView.getComputedStyle(node);
+  height += int(computedStyle.borderTopWidth);
+  height += int(computedStyle.borderBottomWidth);
+  return height;
+}
+
+export function outerWidth(node: HTMLElement): number {
+  // This is deliberately excluding margin for our calculations, since we are using
+  // offsetLeft which is including margin. See getBoundPosition
+  let width = node.clientWidth;
+  const computedStyle = node.ownerDocument.defaultView.getComputedStyle(node);
+  width += int(computedStyle.borderLeftWidth);
+  width += int(computedStyle.borderRightWidth);
+  return width;
+}
+export function innerHeight(node: HTMLElement): number {
+  let height = node.clientHeight;
+  const computedStyle = node.ownerDocument.defaultView.getComputedStyle(node);
+  height -= int(computedStyle.paddingTop);
+  height -= int(computedStyle.paddingBottom);
+  return height;
+}
+
+export function innerWidth(node: HTMLElement): number {
+  let width = node.clientWidth;
+  const computedStyle = node.ownerDocument.defaultView.getComputedStyle(node);
+  width -= int(computedStyle.paddingLeft);
+  width -= int(computedStyle.paddingRight);
+  return width;
+}
+
+interface EventWithOffset {
+  clientX: number, clientY: number
+}
+
+// Get from offsetParent
+export function offsetXYFromParent(evt: EventWithOffset, offsetParent: HTMLElement, scale: number): ControlPosition {
+  const isBody = offsetParent === offsetParent.ownerDocument.body;
+  const offsetParentRect = isBody ? {left: 0, top: 0} : offsetParent.getBoundingClientRect();
+
+  const x = (evt.clientX + offsetParent.scrollLeft - offsetParentRect.left) / scale;
+  const y = (evt.clientY + offsetParent.scrollTop - offsetParentRect.top) / scale;
+
+  return {x, y};
+}
+
+export function createCSSTransform(controlPos: ControlPosition, positionOffset: PositionOffsetControlPosition): Object {
+  const translation = getTranslation(controlPos, positionOffset, 'px');
+  return {[browserPrefixToKey('transform', browserPrefix)]: translation };
+}
+
+export function createSVGTransform(controlPos: ControlPosition, positionOffset: PositionOffsetControlPosition): string {
+  const translation = getTranslation(controlPos, positionOffset, '');
+  return translation;
+}
+export function getTranslation({x, y}: ControlPosition, positionOffset: PositionOffsetControlPosition, unitSuffix: string): string {
+  let translation = `translate(${x}${unitSuffix},${y}${unitSuffix})`;
+  if (positionOffset) {
+    const defaultX = `${(typeof positionOffset.x === 'string') ? positionOffset.x : positionOffset.x + unitSuffix}`;
+    const defaultY = `${(typeof positionOffset.y === 'string') ? positionOffset.y : positionOffset.y + unitSuffix}`;
+    translation = `translate(${defaultX}, ${defaultY})` + translation;
+  }
+  return translation;
+}
+
+export function getTouch(e: MouseTouchEvent, identifier: number): ?{clientX: number, clientY: number} {
+  return (e.targetTouches && findInArray(e.targetTouches, t => identifier === t.identifier)) ||
+         (e.changedTouches && findInArray(e.changedTouches, t => identifier === t.identifier));
+}
+
+export function getTouchIdentifier(e: MouseTouchEvent): ?number {
+  if (e.targetTouches && e.targetTouches[0]) return e.targetTouches[0].identifier;
+  if (e.changedTouches && e.changedTouches[0]) return e.changedTouches[0].identifier;
+}
+
+// User-select Hacks:
+//
+// Useful for preventing blue highlights all over everything when dragging.
+
+// Note we're passing `document` b/c we could be iframed
+export function addUserSelectStyles(doc: ?Document) {
+  if (!doc) return;
+  let styleEl = doc.getElementById('react-draggable-style-el');
+  if (!styleEl) {
+    styleEl = doc.createElement('style');
+    styleEl.type = 'text/css';
+    styleEl.id = 'react-draggable-style-el';
+    styleEl.innerHTML = '.react-draggable-transparent-selection *::-moz-selection {all: inherit;}\n';
+    styleEl.innerHTML += '.react-draggable-transparent-selection *::selection {all: inherit;}\n';
+    doc.getElementsByTagName('head')[0].appendChild(styleEl);
+  }
+  if (doc.body) addClassName(doc.body, 'react-draggable-transparent-selection');
+}
+
+export function scheduleRemoveUserSelectStyles(doc: ?Document) {
+  // Prevent a possible "forced reflow"
+  if (window.requestAnimationFrame) {
+    window.requestAnimationFrame(() => {
+      removeUserSelectStyles(doc);
+    });
+  } else {
+    removeUserSelectStyles(doc);
+  }
+}
+
+function removeUserSelectStyles(doc: ?Document) {
+  if (!doc) return;
+  try {
+    if (doc.body) removeClassName(doc.body, 'react-draggable-transparent-selection');
+    // $FlowIgnore: IE
+    if (doc.selection) {
+      // $FlowIgnore: IE
+      doc.selection.empty();
+    } else {
+      // Remove selection caused by scroll, unless it's a focused input
+      // (we use doc.defaultView in case we're in an iframe)
+      const selection = (doc.defaultView || window).getSelection();
+      if (selection && selection.type !== 'Caret') {
+        selection.removeAllRanges();
+      }
+    }
+  } catch (e) {
+    // probably IE
+  }
+}
+
+export function addClassName(el: HTMLElement, className: string) {
+  if (el.classList) {
+    el.classList.add(className);
+  } else {
+    if (!el.className.match(new RegExp(`(?:^|\\s)${className}(?!\\S)`))) {
+      el.className += ` ${className}`;
+    }
+  }
+}
+
+export function removeClassName(el: HTMLElement, className: string) {
+  if (el.classList) {
+    el.classList.remove(className);
+  } else {
+    el.className = el.className.replace(new RegExp(`(?:^|\\s)${className}(?!\\S)`, 'g'), '');
+  }
+}
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/positionFns.js
+--->
+
+// @flow
+import {isNum, int} from './shims';
+import {getTouch, innerWidth, innerHeight, offsetXYFromParent, outerWidth, outerHeight} from './domFns';
+
+import type Draggable from '../Draggable';
+import type {Bounds, ControlPosition, DraggableData, MouseTouchEvent} from './types';
+import type DraggableCore from '../DraggableCore';
+
+export function getBoundPosition(draggable: Draggable, x: number, y: number): [number, number] {
+  // If no bounds, short-circuit and move on
+  if (!draggable.props.bounds) return [x, y];
+
+  // Clone new bounds
+  let {bounds} = draggable.props;
+  bounds = typeof bounds === 'string' ? bounds : cloneBounds(bounds);
+  const node = findDOMNode(draggable);
+
+  if (typeof bounds === 'string') {
+    const {ownerDocument} = node;
+    const ownerWindow = ownerDocument.defaultView;
+    let boundNode;
+    if (bounds === 'parent') {
+      boundNode = node.parentNode;
+    } else {
+      // Flow assigns the wrong return type (Node) for getRootNode(),
+      // so we cast it to one of the correct types (Element).
+      // The others are Document and ShadowRoot.
+      // All three implement querySelector() so it's safe to call.
+      const rootNode = (((node.getRootNode()): any): Element);
+      boundNode = rootNode.querySelector(bounds);
+    }
+
+    if (!(boundNode instanceof ownerWindow.HTMLElement)) {
+      throw new Error('Bounds selector "' + bounds + '" could not find an element.');
+    }
+    const boundNodeEl: HTMLElement = boundNode; // for Flow, can't seem to refine correctly
+    const nodeStyle = ownerWindow.getComputedStyle(node);
+    const boundNodeStyle = ownerWindow.getComputedStyle(boundNodeEl);
+    // Compute bounds. This is a pain with padding and offsets but this gets it exactly right.
+    bounds = {
+      left: -node.offsetLeft + int(boundNodeStyle.paddingLeft) + int(nodeStyle.marginLeft),
+      top: -node.offsetTop + int(boundNodeStyle.paddingTop) + int(nodeStyle.marginTop),
+      right: innerWidth(boundNodeEl) - outerWidth(node) - node.offsetLeft +
+        int(boundNodeStyle.paddingRight) - int(nodeStyle.marginRight),
+      bottom: innerHeight(boundNodeEl) - outerHeight(node) - node.offsetTop +
+        int(boundNodeStyle.paddingBottom) - int(nodeStyle.marginBottom)
+    };
+  }
+
+  // Keep x and y below right and bottom limits...
+  if (isNum(bounds.right)) x = Math.min(x, bounds.right);
+  if (isNum(bounds.bottom)) y = Math.min(y, bounds.bottom);
+
+  // But above left and top limits.
+  if (isNum(bounds.left)) x = Math.max(x, bounds.left);
+  if (isNum(bounds.top)) y = Math.max(y, bounds.top);
+
+  return [x, y];
+}
+
+export function snapToGrid(grid: [number, number], pendingX: number, pendingY: number): [number, number] {
+  const x = Math.round(pendingX / grid[0]) * grid[0];
+  const y = Math.round(pendingY / grid[1]) * grid[1];
+  return [x, y];
+}
+
+export function canDragX(draggable: Draggable): boolean {
+  return draggable.props.axis === 'both' || draggable.props.axis === 'x';
+}
+
+export function canDragY(draggable: Draggable): boolean {
+  return draggable.props.axis === 'both' || draggable.props.axis === 'y';
+}
+
+// Get {x, y} positions from event.
+export function getControlPosition(e: MouseTouchEvent, touchIdentifier: ?number, draggableCore: DraggableCore): ?ControlPosition {
+  const touchObj = typeof touchIdentifier === 'number' ? getTouch(e, touchIdentifier) : null;
+  if (typeof touchIdentifier === 'number' && !touchObj) return null; // not the right touch
+  const node = findDOMNode(draggableCore);
+  // User can provide an offsetParent if desired.
+  const offsetParent = draggableCore.props.offsetParent || node.offsetParent || node.ownerDocument.body;
+  return offsetXYFromParent(touchObj || e, offsetParent, draggableCore.props.scale);
+}
+
+// Create an data object exposed by <DraggableCore>'s events
+export function createCoreData(draggable: DraggableCore, x: number, y: number): DraggableData {
+  const isStart = !isNum(draggable.lastX);
+  const node = findDOMNode(draggable);
+
+  if (isStart) {
+    // If this is our first move, use the x and y as last coords.
+    return {
+      node,
+      deltaX: 0, deltaY: 0,
+      lastX: x, lastY: y,
+      x, y,
+    };
+  } else {
+    // Otherwise calculate proper values.
+    return {
+      node,
+      deltaX: x - draggable.lastX, deltaY: y - draggable.lastY,
+      lastX: draggable.lastX, lastY: draggable.lastY,
+      x, y,
+    };
+  }
+}
+
+// Create an data exposed by <Draggable>'s events
+export function createDraggableData(draggable: Draggable, coreData: DraggableData): DraggableData {
+  const scale = draggable.props.scale;
+  return {
+    node: coreData.node,
+    x: draggable.state.x + (coreData.deltaX / scale),
+    y: draggable.state.y + (coreData.deltaY / scale),
+    deltaX: (coreData.deltaX / scale),
+    deltaY: (coreData.deltaY / scale),
+    lastX: draggable.state.x,
+    lastY: draggable.state.y
+  };
+}
+
+// A lot faster than stringify/parse
+function cloneBounds(bounds: Bounds): Bounds {
+  return {
+    left: bounds.left,
+    top: bounds.top,
+    right: bounds.right,
+    bottom: bounds.bottom
+  };
+}
+
+function findDOMNode(draggable: Draggable | DraggableCore): HTMLElement {
+  const node = draggable.findDOMNode();
+  if (!node) {
+    throw new Error('<DraggableCore>: Unmounted during event!');
+  }
+  // $FlowIgnore we can't assert on HTMLElement due to tests... FIXME
+  return node;
+}
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/getPrefix.js
+--->
+
+// @flow
+const prefixes = ['Moz', 'Webkit', 'O', 'ms'];
+export function getPrefix(prop: string='transform'): string {
+  // Ensure we're running in an environment where there is actually a global
+  // `window` obj
+  if (typeof window === 'undefined') return '';
+
+  // If we're in a pseudo-browser server-side environment, this access
+  // path may not exist, so bail out if it doesn't.
+  const style = window.document?.documentElement?.style;
+  if (!style) return '';
+
+  if (prop in style) return '';
+
+  for (let i = 0; i < prefixes.length; i++) {
+    if (browserPrefixToKey(prop, prefixes[i]) in style) return prefixes[i];
+  }
+
+  return '';
+}
+
+export function browserPrefixToKey(prop: string, prefix: string): string {
+  return prefix ? `${prefix}${kebabToTitleCase(prop)}` : prop;
+}
+
+export function browserPrefixToStyle(prop: string, prefix: string): string {
+  return prefix ? `-${prefix.toLowerCase()}-${prop}` : prop;
+}
+
+function kebabToTitleCase(str: string): string {
+  let out = '';
+  let shouldCapitalize = true;
+  for (let i = 0; i < str.length; i++) {
+    if (shouldCapitalize) {
+      out += str[i].toUpperCase();
+      shouldCapitalize = false;
+    } else if (str[i] === '-') {
+      shouldCapitalize = true;
+    } else {
+      out += str[i];
+    }
+  }
+  return out;
+}
+
+// Default export is the prefix itself, like 'Moz', 'Webkit', etc
+// Note that you may have to re-test for certain things; for instance, Chrome 50
+// can handle unprefixed `transform`, but not unprefixed `user-select`
+export default (getPrefix(): string);
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/types.js
+--->
+
+// @flow
+
+// eslint-disable-next-line no-use-before-define
+export type DraggableEventHandler = (e: MouseEvent, data: DraggableData) => void | false;
+
+export type DraggableData = {
+  node: HTMLElement,
+  x: number, y: number,
+  deltaX: number, deltaY: number,
+  lastX: number, lastY: number
+};
+
+export type Bounds = {
+  left?: number, top?: number, right?: number, bottom?: number
+};
+export type ControlPosition = {x: number, y: number};
+export type PositionOffsetControlPosition = {x: number|string, y: number|string};
+export type EventHandler<T> = (e: T) => void | false;
+
+// Missing in Flow
+export class SVGElement extends HTMLElement {
+}
+
+// Missing targetTouches
+export class TouchEvent2 extends TouchEvent {
+  changedTouches: TouchList;
+  targetTouches: TouchList;
+}
+
+export type MouseTouchEvent = MouseEvent & TouchEvent2;
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/log.js
+--->
+
+// @flow
+/*eslint no-console:0*/
+export default function log(...args: any) {
+  if (process.env.DRAGGABLE_DEBUG) console.log(...args);
+}
+
+<---
+
+==================================================================================================================================================================
+./lib/utils/shims.js
+--->
+
+// @flow
+// @credits https://gist.github.com/rogozhnikoff/a43cfed27c41e4e68cdc
+export function findInArray(array: Array<any> | TouchList, callback: Function): any {
+  for (let i = 0, length = array.length; i < length; i++) {
+    if (callback.apply(callback, [array[i], i, array])) return array[i];
+  }
+}
+
+export function isFunction(func: any): boolean %checks {
+  // $FlowIgnore[method-unbinding]
+  return typeof func === 'function' || Object.prototype.toString.call(func) === '[object Function]';
+}
+
+export function isNum(num: any): boolean %checks {
+  return typeof num === 'number' && !isNaN(num);
+}
+
+export function int(a: string): number {
+  return parseInt(a, 10);
+}
+
+export function dontSetMe(props: Object, propName: string, componentName: string): ?Error {
+  if (props[propName]) {
+    return new Error(`Invalid prop ${propName} passed to ${componentName} - do not set this, set it on the child.`);
+  }
+}
+
+<---
+

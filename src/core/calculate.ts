@@ -39,6 +39,33 @@ export function calcGridColWidth(positionParams: PositionParams): number {
   );
 }
 
+export interface GridPixelSteps {
+  stepX: number;
+  stepY: number;
+}
+
+export function getGridPixelSteps(
+  positionParams: PositionParams
+): GridPixelSteps {
+  const { margin, rowHeight } = positionParams;
+  return {
+    stepX: calcGridColWidth(positionParams) + margin[0],
+    stepY: rowHeight + margin[1]
+  };
+}
+
+export function snapPixelDeltaToGrid(
+  positionParams: PositionParams,
+  deltaLeft: number,
+  deltaTop: number
+): { deltaLeft: number; deltaTop: number } {
+  const { stepX, stepY } = getGridPixelSteps(positionParams);
+  return {
+    deltaLeft: Math.round(deltaLeft / stepX) * stepX,
+    deltaTop: Math.round(deltaTop / stepY) * stepY
+  };
+}
+
 /**
  * Calculate the pixel size for a grid unit dimension (width or height).
  *

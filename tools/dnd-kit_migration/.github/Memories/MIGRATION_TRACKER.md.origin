@@ -1,0 +1,26 @@
+# 💎 RGL V7 COMMAND CENTER
+
+## 🚥 Chaîne d'Assemblage Déterministe
+```mermaid
+graph LR
+    subgraph "Identité"
+        P[Python Scout] -->|SHA-256| D(discovered)
+    end
+    subgraph "Analyse & Vérité"
+        D --> A(analyzed)
+        A -->|Truth Binding| C(contracted)
+    end
+    subgraph "Synthèse & Patching"
+        C --> PL(planned)
+        PL -->|AST Engine| PT(patched)
+    end
+    subgraph "Certification"
+        PT --> V(validated)
+        V -->|Done| F[Clone RGL V2]
+    end
+```
+
+## 📊 Registre d'Exécution (State Machine)
+
+<!-- REGISTRY_TABLE_START -->
+<!-- REGISTRY_TABLE_END -->

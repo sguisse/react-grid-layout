@@ -151,7 +151,7 @@ export function findOrGenerateResponsiveLayout<B extends Breakpoint>(
     typeof compactTypeOrCompactor === "object" &&
     compactTypeOrCompactor !== null
       ? compactTypeOrCompactor
-      : getCompactor(compactTypeOrCompactor);
+      : getCompactor(compactTypeOrCompactor as CompactType);
   return compactor.compact(corrected, cols);
 }
 
