@@ -17,8 +17,11 @@ on:
         description: "The npm tag"
         required: false
         default: "latest"
-  # We deactivate automatic triggering on PR closed
-  # to avoid posting by mistake. We keep the manual for testing.
+      # We deactivate automatic triggering on PR closed
+      # to avoid posting by mistake. We keep the manual for testing.
+  push:
+    branches:
+      - release-sguisse
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

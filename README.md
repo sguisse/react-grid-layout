@@ -1,3 +1,26 @@
+<p align="center">
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/test.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/test.yml/badge.svg?branch=release-sguisse" alt="CI Test">
+  </a>
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/lint.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/lint.yml/badge.svg?branch=release-sguisse" alt="Lint">
+  </a>
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/audit.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/audit.yml/badge.svg?branch=release-sguisse" alt="Dependency Audit">
+  </a>
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/release.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/release.yml/badge.svg?branch=release-sguisse" alt="Release">
+  </a>
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/gh-pages.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/gh-pages.yml/badge.svg?branch=release-sguisse" alt="Deployment">
+  </a>
+  <a href="https://github.com/sguisse/react-grid-layout/actions/workflows/stale.yml">
+    <img src="https://github.com/sguisse/react-grid-layout/actions/workflows/stale.yml/badge.svg" alt="Stale Management">
+  </a>
+</p>
+
+---
+
 # React-Grid-Layout ==> Forked
 
 - See original [README-origin.md](README-origin.md)
