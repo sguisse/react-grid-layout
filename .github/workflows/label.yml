@@ -2,6 +2,9 @@
 name: Pull request labeler
 on:
   - pull_request_target
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   labeler:
     runs-on: ubuntu-latest
