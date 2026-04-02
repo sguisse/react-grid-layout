@@ -1,6 +1,6 @@
 {
   "name": "@sguisse/react-grid-layout",
-  "version": "2.2.3",
+  "version": "2.2.3-sguisse.0",
   "description": "A draggable and resizable grid layout with responsive breakpoints, for React.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -101,9 +101,9 @@
   "author": "Samuel Reed <samuel.trace.reed@gmail.com> (http://strml.net/)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/react-grid-layout/react-grid-layout/issues"
+    "url": "https://github.com/sguisse/react-grid-layout/issues"
   },
-  "homepage": "https://github.com/react-grid-layout/react-grid-layout",
+  "homepage": "https://github.com/sguisse/react-grid-layout",
   "dependencies": {
     "@dnd-kit/abstract": "0.3.2",
     "@dnd-kit/collision": "0.3.2",
@@ -181,6 +181,7 @@
     "react-dom": ">= 16.3.0"
   },
   "publishConfig": {
+    "access": "public",
     "registry": "https://registry.npmjs.org"
   },
   "jest": {

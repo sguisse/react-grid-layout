@@ -13,47 +13,46 @@ on:
           - patch
           - minor
           - major
-          - prerelease
-          - prepatch
-          - preminor
-          - premajor
-      baseTag:
-        description: "base release tag"
       tag:
         description: "The npm tag"
         required: false
         default: "latest"
-      commit-message:
-        description: "The commit message template"
-        required: false
-        default: "Release {version}"
-  pull_request:
-    types: [closed]
+  # We deactivate automatic triggering on PR closed
+  # to avoid posting by mistake. We keep the manual for testing.
 
 jobs:
   release:
+    # We make sure that this ONLY runs on your release branch
+    if: github.ref == 'refs/heads/release-sguisse'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       issues: write
       pull-requests: write
-      # optional: `id-token: write` permission is required if `provenance: true` is set below
-      id-token: write
+      id-token: write # Required for NPM provenance (security)
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Important so that the tool can calculate the changelog
+
       - name: Set up Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4 # Update to v4 (more stable)
         with:
           node-version: 20
+          registry-url: "https://registry.npmjs.org"
 
-      - uses: nearform-actions/optic-release-automation-action@v4
+      - name: Install & Build
+        run: |
+          yarn install --frozen-lockfile
+          yarn build
+
+      - name: Optic Release Automation
+        uses: nearform-actions/optic-release-automation-action@v4
         with:
-          commit-message: ${{ github.event.inputs.commit-message }}
-          semver: ${{ github.event.inputs.semver }}
-          npm-tag: ${{ github.event.inputs.tag }}
-          # optional: set this secret in your repo config for publishing to NPM
+          semver: ${{ github.event.inputs.semver || 'patch' }}
+          npm-tag: ${{ github.event.inputs.tag || 'latest' }}
           npm-token: ${{ secrets.NPM_TOKEN }}
-          # optional: NPM will generate provenance statement, or abort release if it can't
           provenance: true
-          build-command: |
-            yarn
-            yarn build
+          # We ensure that the action does not re-build unnecessarily
+          build-command: "echo 'Already built'"
