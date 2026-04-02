@@ -1,5 +1,5 @@
 {
-  "name": "react-grid-layout",
+  "name": "@sguisse/react-grid-layout",
   "version": "2.2.3",
   "description": "A draggable and resizable grid layout with responsive breakpoints, for React.",
   "main": "dist/index.js",
@@ -86,7 +86,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com:STRML/react-grid-layout.git"
+    "url": "git@github.com:sguisse/react-grid-layout.git"
   },
   "keywords": [
     "react",
