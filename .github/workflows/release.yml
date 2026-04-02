@@ -20,6 +20,9 @@ on:
   # We deactivate automatic triggering on PR closed
   # to avoid posting by mistake. We keep the manual for testing.
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     # We make sure that this ONLY runs on your release branch
