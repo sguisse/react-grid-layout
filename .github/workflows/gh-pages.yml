@@ -21,6 +21,7 @@ jobs:
         run: |
           yarn
           make build-example
+          touch examples/.nojekyll
 
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
