@@ -21,11 +21,16 @@ jobs:
         run: |
           yarn
           make build-example
-          touch examples/.nojekyll
+          # 1. We prepare a clean deployment file
+          mkdir deploy
+          # 2. We move the examples into the deployment folder
+          cp -r examples deploy/
+          # 3. We create the .nojekyll file at the ROOT of this folder
+          touch deploy/.nojekyll
 
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          branch: gh-pages # The branch the action should deploy to.
-          folder: examples # The folder the action should deploy.
-          target-folder: examples # The destination. Shouldn't touch other folders.
+          branch: gh-pages
+          folder: deploy # We deploy the content of 'deploy'
+          clean: true # Very important to remove old Markdown files that break Jekyll
