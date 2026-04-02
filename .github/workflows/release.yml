@@ -47,9 +47,9 @@ jobs:
 
       - name: Install & Build
         run: |
-          yarn install --frozen-lockfile
+          yarn install
           yarn build
-
+      # --frozen-lockfile
       - name: Optic Release Automation
         uses: nearform-actions/optic-release-automation-action@v4
         with:
