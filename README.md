@@ -1,7 +1,9 @@
 # React-Grid-Layout ==> Forked
 
 - See original [README-origin.md](README-origin.md)
-- [Forked repo](https://github.com/sguisse/react-grid-layout)
+- [Forked repo
+  ](https://github.com/sguisse/react-grid-layout)
+- [DnD-kit samples](https://sguisse.github.io/react-grid-layout/examples/00-showcase.html)
 
 ## DND-kit migration & cross-grid drag-and-drop
 
@@ -89,4 +91,11 @@ http://localhost:4002/react-grid-layout/examples/22-cross-grid-transfer.html
 
 ## Sample
 
+[DnD-kit samples](https://sguisse.github.io/react-grid-layout/examples/00-showcase.html)
+
 ![22-cross-grid-transfer.png](22-cross-grid-transfer.png)
+
+## Migration Status
+
+- 🚧 Non Regression Testing still in progress ... 🚧
+  - Continue to Review AI generated Code. I have push this version **seems** to be already "usable"

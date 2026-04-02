@@ -6,11 +6,11 @@ on:
       semver:
         description: "The semver to use"
         required: true
-        default: "patch"
+        default: "prerelease"
         type: choice
         options:
-          - auto
-          - patch
+          - prerelease # Add this option (increment the .1, .2 of the suffix)
+          - patch # (Will move from 2.2.3-sguisse.x to 2.2.4)
           - minor
           - major
       tag:
