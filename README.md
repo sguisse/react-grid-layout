@@ -18,8 +18,9 @@ Fork based from :
 
 ## Why we want to add cross-grid DnD support
 
-React-Grid-Layout is **THE** library for building responsive grid layouts in React applications. However, it lacked native support for dragging items between different grid instances (cross-grid drag-and-drop). This limitation was a common pain point for users who wanted to organize their layouts across multiple sections or dashboards. Without this limitation this library is the best solution for building complex grid layouts in React, but the lack of cross-grid DnD was a significant drawback for many use cases.
-Many people in the community asked for this functionality :
+**React-Grid-Layout** remains the premier choice for building responsive grids in React. Its robust architecture is the perfect foundation for complex layouts, though users have often sought a way to move items between separate grid instances—a feature known as **cross-grid drag-and-drop**.
+
+Recognizing this as a key requirement for multi-section dashboards and a long-standing request within the community, I have extended the library to include native support for cross-grid interactions. This fork aims to provide that missing piece while staying true to the original's excellent design:
 
 - https://github.com/react-grid-layout/react-grid-layout/pull/1462
 - https://github.com/react-grid-layout/react-grid-layout/discussions/2078#discussioncomment-15990728
