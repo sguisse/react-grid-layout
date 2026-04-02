@@ -5,9 +5,11 @@ on:
   push:
     branches:
       - master
+      - release-sguisse
   pull_request:
     branches:
       - master
+      - release-sguisse
 jobs:
   build:
     runs-on: ubuntu-latest
