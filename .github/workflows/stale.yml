@@ -3,19 +3,26 @@ on:
   schedule:
     - cron: "0 0,6,12,18 * * *"
 
+# Coherence 2026: We force Node 24 here too
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   stale:
     runs-on: ubuntu-latest
+    # FIX: The permissions are placed here, at the job level
+    permissions:
+      issues: write
+      pull-requests: write # Indispensable because your workflow also manages PRs
     steps:
       - uses: actions/stale@v9
-        permissions:
-          issues: write
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           stale-issue-message: "This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this issue will be closed in 7 days"
           stale-pr-message: "This PR is stale because it has been open 30 days with no activity. Remove stale label or comment or this PR will be closed in 7 days"
           stale-pr-label: "stale"
-          exempt-pr-label: "stale"
+          # ADVICE: Do not put "stale" as an exemption label, otherwise the action will ignore itself
+          exempt-pr-label: "pinned"
           days-before-stale: 90
           days-before-close: 30
           operations-per-run: 30
