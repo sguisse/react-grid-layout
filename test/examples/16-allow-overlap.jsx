@@ -1,6 +1,6 @@
 import React from "react";
 import _ from "lodash";
-import RGL, { WidthProvider } from "react-grid-layout";
+import RGL, { WidthProvider } from "@sguisse/react-grid-layout";
 
 const ReactGridLayout = WidthProvider(RGL);
 

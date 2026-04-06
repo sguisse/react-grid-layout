@@ -24,6 +24,9 @@ export {
   type ResponsiveGridLayoutProps as ResponsiveProps
 } from "./react/components/index.js";
 
+// Backwards-compatible WidthProvider export (v1 API)
+export { WidthProvider } from "./react/components/WidthProvider.js";
+
 // Also export with internal names for advanced use cases
 export {
   GridLayout,
@@ -89,6 +92,7 @@ export {
   bottom,
   validateLayout,
   moveElement,
+  computePlaceholder,
 
   // Collision detection
   collides,

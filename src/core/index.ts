@@ -114,6 +114,9 @@ export {
   validateLayout
 } from "./layout.js";
 
+// External-drop placeholder helper
+export { computePlaceholder } from "./computePlaceholder.js";
+
 // =============================================================================
 // Compaction
 // =============================================================================

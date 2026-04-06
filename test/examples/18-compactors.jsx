@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback } from "react";
-import ReactGridLayout, { useContainerWidth } from "react-grid-layout";
+import ReactGridLayout, { useContainerWidth } from "@sguisse/react-grid-layout";
 import {
   verticalCompactor,
   horizontalCompactor,

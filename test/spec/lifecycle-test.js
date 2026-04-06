@@ -822,6 +822,7 @@ describe("Lifecycle tests", function () {
             width={1200}
             layout={[{ i: "a", x: 0, y: 0, w: 2, h: 2 }]}
             dropConfig={{ enabled: true, onDragOver }}
+            externalDropMode={"inject-placeholder"}
             onLayoutChange={onLayoutChange}
           >
             <div key="a">a</div>

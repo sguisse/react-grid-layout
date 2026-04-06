@@ -665,7 +665,7 @@ Usage:
 
 ```typescript
 // New API (recommended)
-import { useGridLayout, GridLayout } from "react-grid-layout";
+import { useGridLayout, GridLayout } from "@sguisse/react-grid-layout";
 
 // Core only (for custom implementations)
 import {

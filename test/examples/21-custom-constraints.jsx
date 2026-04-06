@@ -5,7 +5,7 @@ import {
   gridBounds,
   minMaxSize,
   snapToGrid
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 /**
  * Example 21: Custom Constraints

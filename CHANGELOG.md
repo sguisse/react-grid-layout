@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (Apr 2026)
+
+### Bug Fixes
+
+- External drop preview: Add a passive external-drop preview API so cross-container
+  HTML5 drags no longer inject a persistent placeholder into public layout state
+  by default. Introduces `externalDropMode="passive"` and `onExternalPreview`
+  callback. This prevents compaction-induced layout oscillation and the
+  `Maximum update depth exceeded` error during cross-grid drops. (See tests)
+
 ## 2.2.1 (Dec 30, 2025)
 
 ### Bug Fixes
@@ -116,7 +126,7 @@ See the [migration section in the README](./README.md#migrating-from-v1) for det
 The grid no longer auto-measures width. Use the new `useContainerWidth` hook:
 
 ```tsx
-import ReactGridLayout, { useContainerWidth } from "react-grid-layout";
+import ReactGridLayout, { useContainerWidth } from "@sguisse/react-grid-layout";
 
 function MyGrid() {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -171,7 +181,7 @@ import { fastVerticalCompactor } from 'react-grid-layout/extras';
 import ReactGridLayout, {
   Responsive,
   useContainerWidth
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 // Core utilities (framework-agnostic, no React)
 import { compact, moveElement, collides } from "react-grid-layout/core";

@@ -66,6 +66,7 @@ import {
   calcGridItemWHPx,
   getGridPixelSteps
 } from "../../core/calculate.js";
+import { computePlaceholder } from "../../core/computePlaceholder.js";
 import { defaultPositionStrategy } from "../../core/position.js";
 import {
   applyPositionConstraints,
@@ -109,6 +110,19 @@ export interface GridLayoutProps {
     | { w?: number; h?: number; dragOffsetX?: number; dragOffsetY?: number }
     | false
     | void;
+  /**
+   * How to handle external (cross-container) drops. When 'passive' the
+   * library will NOT inject a persistent placeholder into layout state and
+   * instead exposes a passive preview API via `onExternalPreview`.
+   * When 'inject-placeholder' (legacy) the placeholder is inserted into
+   * internal layout state (no public layout emission) as before.
+   */
+  externalDropMode?: "passive" | "inject-placeholder";
+  /**
+   * Called during external drag-over with a computed placeholder item.
+   * Consumers can render an overlay preview and decide when/if to commit.
+   */
+  onExternalPreview?: (placeholder: LayoutItem | null) => void;
 }
 
 const noop = () => {};
@@ -292,7 +306,9 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     onResize: onResizeProp = noop,
     onResizeStop: onResizeStopProp = noop,
     onDrop: onDropProp = noop,
-    onDropDragOver: onDropDragOverProp = noop
+    onDropDragOver: onDropDragOverProp = noop,
+    externalDropMode = "passive",
+    onExternalPreview: onExternalPreviewProp = noop
   } = props;
 
   const gridConfig: GridConfig = useMemo(
@@ -1158,6 +1174,31 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         e: e.nativeEvent
       };
 
+      // Passive mode: compute a preview placeholder without mutating layout
+      if (externalDropMode === "passive") {
+        try {
+          const placeholder = computePlaceholder(
+            layoutRef.current,
+            finalDroppingItem,
+            positionParams,
+            compactor,
+            {
+              clientX: e.clientX,
+              clientY: e.clientY,
+              containerRect: gridRect,
+              dragOffsetX,
+              dragOffsetY,
+              transformScale
+            }
+          );
+          onExternalPreviewProp(placeholder);
+        } catch (err) {
+          // Swallow any errors in the passive preview to avoid breaking drags
+          console.debug("computePlaceholder failed", err);
+        }
+        return;
+      }
+
       if (!droppingDOMNode) {
         const calculatedPosition = calcXY(
           positionParams,
@@ -1218,10 +1259,15 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       }
 
       if (dragEnterCounterRef.current === 0) {
-        removeDroppingPlaceholder();
+        if (externalDropMode === "passive") {
+          // Passive previews are handled by the consumer via onExternalPreview
+          onExternalPreviewProp(null);
+        } else {
+          removeDroppingPlaceholder();
+        }
       }
     },
-    [removeDroppingPlaceholder]
+    [removeDroppingPlaceholder, externalDropMode, onExternalPreviewProp]
   );
 
   const handleDragEnter = useCallback((e: ReactDragEvent) => {
@@ -1238,10 +1284,16 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       const currentLayout = layoutRef.current;
       const item = currentLayout.find((l) => l.i === droppingItem.i);
       dragEnterCounterRef.current = 0;
-      removeDroppingPlaceholder();
-      onDropProp(currentLayout, item, e.nativeEvent);
+      if (externalDropMode === "passive") {
+        // Do not mutate internal layout during passive preview — inform consumer
+        onExternalPreviewProp(null);
+        onDropProp(currentLayout, undefined, e.nativeEvent);
+      } else {
+        removeDroppingPlaceholder();
+        onDropProp(currentLayout, item, e.nativeEvent);
+      }
     },
-    [droppingItem.i, removeDroppingPlaceholder, onDropProp]
+    [droppingItem.i, removeDroppingPlaceholder, onDropProp, externalDropMode, onExternalPreviewProp]
   );
 
   const processGridItem = useCallback(

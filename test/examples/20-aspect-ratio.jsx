@@ -5,7 +5,7 @@ import {
   gridBounds,
   minMaxSize,
   aspectRatio
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 /**
  * Example 20: Aspect Ratio Constraints

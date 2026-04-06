@@ -210,7 +210,7 @@ Or link them directly:
 ## Quick Start
 
 ```tsx
-import ReactGridLayout, { useContainerWidth } from "react-grid-layout";
+import ReactGridLayout, { useContainerWidth } from "@sguisse/react-grid-layout";
 import "react-grid-layout/css/styles.css";
 
 function MyGrid() {
@@ -261,7 +261,7 @@ You can also define layout on children using `data-grid`:
 Use `Responsive` for automatic breakpoint handling:
 
 ```tsx
-import { Responsive, useContainerWidth } from "react-grid-layout";
+import { Responsive, useContainerWidth } from "@sguisse/react-grid-layout";
 
 function MyResponsiveGrid() {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -297,7 +297,7 @@ The `width` prop is required. You have several options:
 ### Option 1: useContainerWidth Hook (Recommended)
 
 ```tsx
-import ReactGridLayout, { useContainerWidth } from "react-grid-layout";
+import ReactGridLayout, { useContainerWidth } from "@sguisse/react-grid-layout";
 
 function MyGrid() {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -356,7 +356,7 @@ Observes container width using ResizeObserver and provides reactive width update
 - Works better with SSR
 
 ```tsx
-import { useContainerWidth } from "react-grid-layout";
+import { useContainerWidth } from "@sguisse/react-grid-layout";
 
 function MyGrid() {
   const { width, containerRef, mounted, measureWidth } = useContainerWidth({
@@ -404,7 +404,7 @@ Core layout state management hook. Use this when you need direct control over dr
 - Build headless grid implementations
 
 ```tsx
-import { useGridLayout, horizontalCompactor } from "react-grid-layout";
+import { useGridLayout, horizontalCompactor } from "@sguisse/react-grid-layout";
 
 function CustomGrid({ initialLayout }) {
   const {
@@ -527,7 +527,7 @@ Manages responsive breakpoints and generates layouts for different screen sizes.
 - Build custom breakpoint UIs
 
 ```tsx
-import { useContainerWidth, useResponsiveLayout } from "react-grid-layout";
+import { useContainerWidth, useResponsiveLayout } from "@sguisse/react-grid-layout";
 
 function CustomResponsiveGrid() {
   const { width, containerRef, mounted } = useContainerWidth();
@@ -1088,7 +1088,7 @@ Renders an SVG grid background that aligns with GridLayout cells. Use this to vi
 
 ```tsx
 import { GridBackground } from "react-grid-layout/extras";
-import ReactGridLayout, { useContainerWidth } from "react-grid-layout";
+import ReactGridLayout, { useContainerWidth } from "@sguisse/react-grid-layout";
 
 function MyGrid() {
   const { width, containerRef, mounted } = useContainerWidth();

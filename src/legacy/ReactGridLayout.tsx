@@ -242,6 +242,10 @@ function ReactGridLayout(props: LegacyReactGridLayoutProps) {
       dragConfig={dragConfig}
       resizeConfig={resizeConfig}
       dropConfig={dropConfig}
+      // Legacy API expects the dropping placeholder to be injected into the
+      // internal layout state. Preserve that behaviour for the v1 wrapper by
+      // using the legacy "inject-placeholder" mode.
+      externalDropMode={"inject-placeholder"}
       positionStrategy={positionStrategy}
       compactor={compactor}
       constraints={constraints}

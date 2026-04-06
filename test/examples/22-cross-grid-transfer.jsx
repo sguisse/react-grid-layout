@@ -6,7 +6,7 @@ import React, {
   useState
 } from "react";
 import PropTypes from "prop-types";
-import { GridLayout, useContainerWidth } from "react-grid-layout";
+import { GridLayout, useContainerWidth, calcGridItemPosition } from "@sguisse/react-grid-layout";
 
 /**
  * Example 22: Cross-Grid Transfer (styled parity with Example 21)
@@ -161,6 +161,7 @@ function TransferGridPanel({
   onDropToGrid
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
+  const [externalPreview, setExternalPreview] = useState(null);
   const transferDestination = gridId === "left" ? "right" : "left";
   const isDropTarget = Boolean(
     activeTransfer && activeTransfer.sourceGridId !== gridId
@@ -191,6 +192,11 @@ function TransferGridPanel({
       })
     };
   }, [activeTransfer, isDropTarget]);
+
+  const handleExternalPreview = useCallback((placeholder) => {
+    // placeholder is either a LayoutItem or null
+    setExternalPreview(placeholder || null);
+  }, []);
 
   const children = useMemo(
     () =>
@@ -301,6 +307,7 @@ function TransferGridPanel({
     <section
       ref={containerRef}
       style={{
+        position: "relative",
         padding: 18,
         borderRadius: 18,
         background: isDropTarget
@@ -309,7 +316,8 @@ function TransferGridPanel({
         border: isDropTarget
           ? "1px solid rgba(14, 165, 233, 0.4)"
           : "1px solid rgba(148, 163, 184, 0.28)",
-        boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)"
+        boxShadow: "0 18px 50px rgba(15, 23, 42, 0.08)",
+        overflow: "visible"
       }}
     >
       <div
@@ -348,12 +356,57 @@ function TransferGridPanel({
           resizeConfig={RESIZE_CONFIG}
           dropConfig={dropConfig}
           droppingItem={droppingItem}
+          externalDropMode="passive"
+          onExternalPreview={handleExternalPreview}
           onDrop={(nextLayout, droppedItem) =>
             onDropToGrid(gridId, nextLayout, droppedItem)
           }
         >
           {children}
         </GridLayout>
+      )}
+
+      {/* External-drop passive preview overlay (rendered above the grid) */}
+      {externalPreview && (
+        (() => {
+          const positionParams = {
+            margin: GRID_CONFIG.margin,
+            containerPadding: GRID_CONFIG.containerPadding,
+            containerWidth: width,
+            cols: GRID_CONFIG.cols,
+            rowHeight: GRID_CONFIG.rowHeight,
+            maxRows: GRID_CONFIG.maxRows
+          };
+
+          const pos = calcGridItemPosition(
+            positionParams,
+            externalPreview.x,
+            externalPreview.y,
+            externalPreview.w,
+            externalPreview.h
+          );
+
+          const style = {
+            position: "absolute",
+            top: pos.top,
+            left: pos.left,
+            width: pos.width,
+            height: pos.height,
+            borderRadius: 10,
+            background: "rgba(14,165,233,0.08)",
+            border: "2px dashed rgba(14,165,233,0.6)",
+            boxSizing: "border-box",
+            zIndex: 9999,
+            pointerEvents: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#0369a1",
+            fontWeight: 700
+          };
+
+          return <div style={style}>Preview</div>;
+        })()
       )}
     </section>
   );
@@ -433,6 +486,7 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
   const endTransfer = useCallback(() => {
     transferRef.current = null;
     setActiveTransfer(null);
+    setExternalPreview(null);
   }, []);
 
   const handleDropToGrid = useCallback(

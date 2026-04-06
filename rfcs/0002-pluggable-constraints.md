@@ -132,7 +132,7 @@ import {
   gridBounds,
   minMaxSize,
   aspectRatio
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 // Default behavior
 <GridLayout constraints={[gridBounds, minMaxSize]} />
@@ -229,7 +229,7 @@ import {
   noCompactor,
   boundedX,
   minMaxSize
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 <GridLayout constraints={[boundedX, minMaxSize]} compactor={noCompactor} />;
 ```

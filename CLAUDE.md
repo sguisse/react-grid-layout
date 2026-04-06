@@ -122,7 +122,7 @@ import ReactGridLayout, {
   useContainerWidth,
   verticalCompactor,
   horizontalCompactor
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 // With composable interfaces
 <ReactGridLayout

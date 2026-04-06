@@ -10,7 +10,7 @@ import {
   defaultConstraints,
   noCompactor,
   verticalCompactor
-} from "react-grid-layout";
+} from "@sguisse/react-grid-layout";
 
 /**
  * Example 19: Pluggable Constraints
