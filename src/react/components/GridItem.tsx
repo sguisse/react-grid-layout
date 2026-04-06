@@ -1809,7 +1809,7 @@ export function GridItem(props: GridItemProps): ReactElement {
     }
 
     prevDroppingPositionRef.current = droppingPosition;
-  }, [droppingPosition, dragging, emitDragMove, emitDragStart, positionParams, x, y, w, h]);
+  }, [droppingPosition, dragging, emitDragMove, emitDragStart, positionParams, x, y, w, h, createGridItemDndSnapshot]);
 
   const dndSnapshot = createGridItemDndSnapshot(
     positionParams,

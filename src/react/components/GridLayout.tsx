@@ -427,7 +427,11 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       }
 
       if (innerRef && "current" in innerRef) {
-        (innerRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+        // Avoid modifying the `innerRef` parameter directly to satisfy
+        // react-hooks/immutability lint rules. Assign to a local variable
+        // reference and update its .current property instead.
+        const mutableRef = innerRef as Mutable<{ current: HTMLDivElement | null }>;
+        mutableRef.current = node;
       }
     },
     [innerRef]

@@ -216,6 +216,9 @@
         }
       ]
     },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(?:@preact|@dnd-kit)/)"
+    ],
     "moduleFileExtensions": [
       "ts",
       "tsx",

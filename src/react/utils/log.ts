@@ -21,7 +21,7 @@ export function logDebug(...args: any[]): void {
     // eslint-disable-next-line no-console
     const ts = new Date(now).toISOString();
     console.debug(`[${ts}]`, ...args);
-  } catch (err) {
+  } catch {
     // Swallow logging errors to avoid breaking application flow
   }
 }

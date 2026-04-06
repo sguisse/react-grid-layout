@@ -200,13 +200,6 @@ export function useRuntimeDragDropMonitor(
   handlers: RuntimeDragDropMonitorHandlers
 ): void {
   const runtime = loadReactDndRuntime();
-  if (!runtime) {
-    // Log when runtime not available to help debugging in dev
-    React.useEffect(() => {
-      logDebug("[runtime] useDragDropMonitor: runtime unavailable, handlers not attached", handlers);
-    }, [handlers]);
-    return;
-  }
 
   const wrappedHandlers = React.useMemo(() => {
     const wrap = (name: string, fn?: ((...args: any[]) => void) | undefined) => {
@@ -224,7 +217,18 @@ export function useRuntimeDragDropMonitor(
     } as RuntimeDragDropMonitorHandlers;
   }, [handlers]);
 
-  runtime.useDragDropMonitor(wrappedHandlers);
+  // Fallback hook implementation when runtime is unavailable. We provide a
+  // noop hook that logs the condition so callers can invoke a hook in a
+  // consistent order without branching (preserves React hook ordering).
+  const useNoopMonitor = (h: RuntimeDragDropMonitorHandlers) => {
+    React.useEffect(() => {
+      logDebug("[runtime] useDragDropMonitor: runtime unavailable, handlers not attached", h);
+    }, [h]);
+  };
+
+  const useMonitorHook = runtime?.useDragDropMonitor ?? useNoopMonitor;
+
+  useMonitorHook(wrappedHandlers);
 }
 
 export const PointerSensor = {
