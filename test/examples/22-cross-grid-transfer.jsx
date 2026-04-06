@@ -158,7 +158,11 @@ function TransferGridPanel({
   activeTransfer,
   onTransferStart,
   onTransferEnd,
-  onDropToGrid
+  onDropToGrid,
+  crossGridModeItemId,
+  onCrossDropRejected,
+  onDragModeChange,
+  onDragStop
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
   const [externalPreview, setExternalPreview] = useState(null);
@@ -206,16 +210,44 @@ function TransferGridPanel({
           <div key={item.i}>
             <div
               style={{
+                position: "relative",
                 height: "100%",
                 padding: 12,
                 display: "flex",
                 flexDirection: "column",
                 borderRadius: 12,
                 borderTop: `4px solid ${meta.accent}`,
-                background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
-                boxShadow: "inset 0 0 0 1px rgba(148, 163, 184, 0.18)"
+                background: crossGridModeItemId === item.i
+                  ? "linear-gradient(180deg, #fefce8 0%, #fef9c3 100%)"
+                  : "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
+                boxShadow: crossGridModeItemId === item.i
+                  ? "inset 0 0 0 2px rgba(234, 179, 8, 0.5)"
+                  : "inset 0 0 0 1px rgba(148, 163, 184, 0.18)",
+                transition: "background 0.15s, box-shadow 0.15s"
               }}
             >
+              {crossGridModeItemId === item.i && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 8,
+                    right: 40,
+                    background: "#78350f",
+                    color: "#fef08a",
+                    borderRadius: 999,
+                    padding: "2px 10px",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.06em",
+                    pointerEvents: "none",
+                    display: "flex",
+                    gap: 4,
+                    alignItems: "center"
+                  }}
+                >
+                  &#x2197; Cross-grid
+                </div>
+              )}
               <div
                 style={{
                   display: "flex",
@@ -346,6 +378,29 @@ function TransferGridPanel({
         </div>
       </div>
 
+      <div
+        style={{
+          marginBottom: 10,
+          padding: "5px 10px",
+          borderRadius: 8,
+          background: crossGridModeItemId
+            ? "rgba(234, 179, 8, 0.12)"
+            : "rgba(148, 163, 184, 0.07)",
+          border: crossGridModeItemId
+            ? "1px solid rgba(234, 179, 8, 0.4)"
+            : "1px dashed rgba(148, 163, 184, 0.3)",
+          fontSize: 11,
+          color: crossGridModeItemId ? "#78350f" : "#64748b",
+          transition: "all 0.15s"
+        }}
+      >
+        {crossGridModeItemId ? (
+          <span>&#x2197; <strong>Cross-grid mode</strong> — now drag the card to the new position and drop it to transfer</span>
+        ) : (
+          <span>&#128273; Hold <strong>&#8984; / Ctrl</strong> while grabbing a card header to activate cross-grid transfer mode</span>
+        )}
+      </div>
+
       {mounted && (
         <GridLayout
           width={width}
@@ -358,9 +413,13 @@ function TransferGridPanel({
           droppingItem={droppingItem}
           externalDropMode="passive"
           onExternalPreview={handleExternalPreview}
+          onDragModeChange={onDragModeChange}
+          onDragStop={onDragStop}
+          onCrossDropRejected={onCrossDropRejected}
           onDrop={(nextLayout, droppedItem) =>
             onDropToGrid(gridId, nextLayout, droppedItem)
           }
+          crossGridIcon="➕"
         >
           {children}
         </GridLayout>
@@ -421,7 +480,11 @@ TransferGridPanel.propTypes = {
   activeTransfer: transferShape,
   onTransferStart: PropTypes.func.isRequired,
   onTransferEnd: PropTypes.func.isRequired,
-  onDropToGrid: PropTypes.func.isRequired
+  onDropToGrid: PropTypes.func.isRequired,
+  crossGridModeItemId: PropTypes.string,
+  onDragModeChange: PropTypes.func,
+  onDragStop: PropTypes.func,
+  onCrossDropRejected: PropTypes.func
 };
 
 /**
@@ -441,6 +504,17 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
   const [rightDisplayLayout, setRightDisplayLayout] = useState(INITIAL_RIGHT_LAYOUT);
   const transferRef = useRef(null);
   const [activeTransfer, setActiveTransfer] = useState(null);
+  // Tracks which item is showing the cross-grid-mode indicator (set via
+  // onDragModeChange before drag starts, cleared on drag end or key release).
+  const [crossGridMode, setCrossGridMode] = useState(null);
+
+  // Simple toast stack for user-facing notifications in the examples
+  const [toasts, setToasts] = useState([]);
+  const showToast = useCallback((message, duration = 3500) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    setToasts((t) => [...t, { id, message }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), duration);
+  }, []);
 
   // Refs track GridLayout's actual compacted positions, updated via
   // onLayoutChange callbacks. We store in refs (not state) so that the
@@ -486,7 +560,6 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
   const endTransfer = useCallback(() => {
     transferRef.current = null;
     setActiveTransfer(null);
-    setExternalPreview(null);
   }, []);
 
   const handleDropToGrid = useCallback(
@@ -553,8 +626,108 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
 
   const columnStyle = { display: "flex", flexDirection: "column", gap: 8 };
 
+  // ── CTRL/CMD drag-mode transfer ────────────────────────────────────────────
+  // Transfer item at its current grid coords into the other grid on dragStop
+  // when the mode was locked to CROSS_GRID_MOVE.
+  const performCrossGridTransfer = useCallback((sourceGridId, item, sourceLayout) => {
+    const targetGridId = sourceGridId === "left" ? "right" : "left";
+    const targetRef = targetGridId === "left" ? leftLayoutRef : rightLayoutRef;
+
+    const committedItem = {
+      i: item.i, x: item.x, y: item.y, w: item.w, h: item.h, static: false
+    };
+    // sourceLayout comes from onDragStop (final compacted state of source grid).
+    const newSourceLayout = [...sourceLayout].filter((l) => l.i !== item.i);
+    const newTargetLayout = sortLayout([
+      ...targetRef.current.filter((l) => l.i !== item.i),
+      committedItem
+    ]);
+
+    if (targetGridId === "left") {
+      leftLayoutRef.current = newTargetLayout;
+      rightLayoutRef.current = newSourceLayout;
+      setLeftLayout(newTargetLayout);
+      setRightLayout(newSourceLayout);
+    } else {
+      rightLayoutRef.current = newTargetLayout;
+      leftLayoutRef.current = newSourceLayout;
+      setRightLayout(newTargetLayout);
+      setLeftLayout(newSourceLayout);
+    }
+    setCrossGridMode(null);
+  }, []);
+
+  const handleLeftDragModeChange = useCallback((_layout, item, mode) => {
+    setCrossGridMode(
+      mode === "CROSS_GRID_MOVE" && item
+        ? { gridId: "left", itemId: item.i }
+        : null
+    );
+  }, []);
+
+  const handleRightDragModeChange = useCallback((_layout, item, mode) => {
+    setCrossGridMode(
+      mode === "CROSS_GRID_MOVE" && item
+        ? { gridId: "right", itemId: item.i }
+        : null
+    );
+  }, []);
+
+  const handleLeftDragStop = useCallback(
+    (layout, _oldItem, item, _placeholder, _event, _el, mode) => {
+      if (mode === "CROSS_GRID_MOVE" && item) {
+        performCrossGridTransfer("left", item, layout);
+      } else {
+        setCrossGridMode(null);
+      }
+    },
+    [performCrossGridTransfer]
+  );
+
+  const handleRightDragStop = useCallback(
+    (layout, _oldItem, item, _placeholder, _event, _el, mode) => {
+      if (mode === "CROSS_GRID_MOVE" && item) {
+        performCrossGridTransfer("right", item, layout);
+      } else {
+        setCrossGridMode(null);
+      }
+    },
+    [performCrossGridTransfer]
+  );
+  // ──────────────────────────────────────────────────────────────────────────
+
   return (
     <div style={{ padding: "10px 0 24px 0" }}>
+      {/* Toast container */}
+      <div
+        aria-live="polite"
+        style={{
+          position: "fixed",
+          right: 18,
+          bottom: 18,
+          zIndex: 99999,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8
+        }}
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            style={{
+              background: "rgba(15,23,42,0.95)",
+              color: "#fff",
+              padding: "10px 14px",
+              borderRadius: 8,
+              boxShadow: "0 6px 24px rgba(15,23,42,0.12)",
+              fontSize: 13,
+              minWidth: 160
+            }}
+          >
+            {t.message}
+          </div>
+        ))}
+      </div>
       {/* Per-grid layout debug panels — test-hook.jsx panel is suppressed for dual-grid pages */}
       <div style={{ display: "flex", gap: 18, alignItems: "flex-start", marginBottom: 12 }}>
         <div className="layoutJSON" style={{ flex: "0 0 calc(50% - 9px)" }}>
@@ -601,6 +774,10 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
             onTransferStart={beginTransfer}
             onTransferEnd={endTransfer}
             onDropToGrid={handleDropToGrid}
+            crossGridModeItemId={crossGridMode?.gridId === "left" ? crossGridMode.itemId : null}
+            onCrossDropRejected={(fromLayout, item) => showToast(`Drop cancelled — ${item?.i ?? 'item'}`)}
+            onDragModeChange={handleLeftDragModeChange}
+            onDragStop={handleLeftDragStop}
           />
         </div>
         <div style={columnStyle}>
@@ -614,6 +791,10 @@ export default function CrossGridTransferLayout({ onLayoutChange }) {
             onTransferStart={beginTransfer}
             onTransferEnd={endTransfer}
             onDropToGrid={handleDropToGrid}
+            crossGridModeItemId={crossGridMode?.gridId === "right" ? crossGridMode.itemId : null}
+            onCrossDropRejected={(fromLayout, item) => showToast(`Drop cancelled — ${item?.i ?? 'item'}`)}
+            onDragModeChange={handleRightDragModeChange}
+            onDragStop={handleRightDragStop}
           />
         </div>
       </div>

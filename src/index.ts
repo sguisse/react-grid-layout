@@ -77,7 +77,9 @@ export type {
   ResizeHandleAxis,
   GridDragEvent,
   GridResizeEvent,
-  EventCallback
+  EventCallback,
+  DragMoveMode,
+  DragModeChangeCallback
 } from "./core/types.js";
 
 // =============================================================================
@@ -122,3 +124,14 @@ export {
   getColsFromBreakpoint,
   findOrGenerateResponsiveLayout
 } from "./core/index.js";
+
+export {
+  gridBounds,
+  minMaxSize,
+  boundedX,
+  boundedY,
+  containerBounds,
+  aspectRatio,
+  snapToGrid,
+  defaultConstraints
+} from "./core";

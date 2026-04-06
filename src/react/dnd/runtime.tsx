@@ -1,4 +1,8 @@
 import React, { type PropsWithChildren } from "react";
+import { logDebug } from "../utils/log.js";
+import * as DndKitReact from "@dnd-kit/react";
+import * as DndKitSortable from "@dnd-kit/react/sortable";
+import * as DndKitDom from "@dnd-kit/dom";
 
 type DragEventHandler = (event: any, manager: any) => void;
 
@@ -85,7 +89,7 @@ function loadReactDndRuntime():
     return null;
   }
 
-  return require("@dnd-kit/react") as {
+  return DndKitReact as {
     DragDropProvider: React.ComponentType<RuntimeDragDropProviderProps>;
     DragOverlay: React.ComponentType<RuntimeDragOverlayProps>;
     useDraggable: <T>(
@@ -106,7 +110,7 @@ function loadSortableRuntime():
     return null;
   }
 
-  return require("@dnd-kit/react/sortable") as {
+  return DndKitSortable as {
     useSortable: <T>(
       input: RuntimeUseSortableInput<T>
     ) => RuntimeUseSortableResult;
@@ -126,7 +130,7 @@ function loadDomRuntime():
     return null;
   }
 
-  return require("@dnd-kit/dom") as {
+  return DndKitDom as {
     PointerSensor: { configure(options: unknown): unknown };
     KeyboardSensor: { configure(options: unknown): unknown };
     PointerActivationConstraints: {
@@ -199,7 +203,7 @@ export function useRuntimeDragDropMonitor(
   if (!runtime) {
     // Log when runtime not available to help debugging in dev
     React.useEffect(() => {
-      console.debug("[runtime] useDragDropMonitor: runtime unavailable, handlers not attached", handlers);
+      logDebug("[runtime] useDragDropMonitor: runtime unavailable, handlers not attached", handlers);
     }, [handlers]);
     return;
   }
@@ -208,9 +212,7 @@ export function useRuntimeDragDropMonitor(
     const wrap = (name: string, fn?: ((...args: any[]) => void) | undefined) => {
       if (!fn) return undefined;
       return (event: any, manager?: any) => {
-        try {
-          console.debug(`[runtime] dnd-monitor ${name}`, event, manager);
-        } catch (err) {}
+        logDebug(`[runtime] dnd-monitor ${name}`, event, manager);
         fn(event, manager);
       };
     };

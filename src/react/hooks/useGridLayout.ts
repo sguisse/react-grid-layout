@@ -7,6 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { deepEqual } from "fast-equals";
+import { logDebug } from "../utils/log.js";
 
 import type {
   Layout,
@@ -204,10 +205,10 @@ export function useGridLayout(
 
   const onDrag = useCallback(
     (itemId: string, x: number, y: number) => {
-      console.debug('[useGridLayout] onDrag received', { itemId, x, y });
+      logDebug('[useGridLayout] onDrag received', { itemId, x, y });
       const item = getLayoutItem(layout, itemId);
       if (!item) {
-        console.debug('[useGridLayout] onDrag: item not found', itemId);
+        logDebug('[useGridLayout] onDrag: item not found', itemId);
         return;
       }
 
@@ -227,10 +228,10 @@ export function useGridLayout(
         cols,
         compactor.allowOverlap
       );
-      console.debug('[useGridLayout] onDrag: moveElement computed', { itemId, x, y });
+      logDebug('[useGridLayout] onDrag: moveElement computed', { itemId, x, y });
       const compacted = compactor.compact(newLayout, cols);
       setLayoutState(compacted);
-      console.debug('[useGridLayout] onDrag: setLayoutState applied', { length: compacted.length });
+      logDebug('[useGridLayout] onDrag: setLayoutState applied', { length: compacted.length });
     },
     [layout, cols, compactor, preventCollision]
   );

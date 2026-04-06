@@ -23,6 +23,7 @@ import {
   useRuntimeDraggable,
   useRuntimeSortable
 } from "../dnd/runtime.js";
+import { logDebug } from "../utils/log.js";
 
 import type {
   Position,
@@ -34,7 +35,8 @@ import type {
   ConstraintContext,
   Layout,
   LayoutItem as LayoutItemType,
-  PositionStrategy
+  PositionStrategy,
+  DragMoveMode
 } from "../../core/types.js";
 import type { PositionParams } from "../../core/calculate.js";
 import {
@@ -153,6 +155,20 @@ function getGridItemResizeData(
     : null;
 }
 
+function getGridItemDragData(
+  data: unknown
+): GridItemDragData | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const kind = (data as { kind?: unknown }).kind;
+  const itemId = (data as { itemId?: unknown }).itemId;
+  return kind === "drag" && typeof itemId === "string"
+    ? { kind, itemId }
+    : null;
+}
+
 interface GridResizeHandleProps {
   axis: ResizeHandleAxis;
   itemId: string;
@@ -257,6 +273,16 @@ export interface GridItemProps {
   onResize?: GridItemCallback<GridResizeEvent>;
   onResizeStop?: GridItemCallback<GridResizeEvent>;
   onResizeCancel?: (itemId: string) => void;
+  /**
+   * Called when the drag move mode toggles via CTRL/CMD key press or release
+   * while the drag handle is held down (before dragging has started).
+   * Mode is locked once dragging begins; this callback is not fired after lock.
+   */
+  onDragModeChange?: (
+    itemId: string,
+    mode: DragMoveMode,
+    event: Event | null
+  ) => void;
   /**
    * When true, this item is currently the dnd-kit drag source (tracked by our
    * own React state via dragOverlayId). We use this — not dnd-kit's own
@@ -490,7 +516,8 @@ export function GridItem(props: GridItemProps): ReactElement {
     onResizeStart: onResizeStartProp,
     onResize: onResizeProp,
     onResizeStop: onResizeStopProp,
-    onResizeCancel: onResizeCancelProp
+    onResizeCancel: onResizeCancelProp,
+    onDragModeChange: onDragModeChangeProp
   } = props;
 
   const [dragging, setDragging] = useState(false);
@@ -513,6 +540,17 @@ export function GridItem(props: GridItemProps): ReactElement {
   const thresholdExceededRef = useRef(false);
   const draggingRef = useRef(false);
   const activeDndResizeRef = useRef<ActiveDndResizeSession | null>(null);
+  // Drag move mode: tracks CTRL/CMD state while handle is selected.
+  // Locked to a non-null value when dragging actually starts.
+  const dragModeRef = useRef<DragMoveMode>("INNER_GRID_MOVE");
+  const lockedModeRef = useRef<DragMoveMode | null>(null);
+  // Ref to key-listener cleanup fn, installed on handle pointerdown.
+  const keyListenerCleanupRef = useRef<(() => void) | null>(null);
+  // Stable refs so key-listener closures always call the latest callback / use the latest id.
+  const iRef = useRef(i);
+  iRef.current = i;
+  const onDragModeChangePropRef = useRef(onDragModeChangeProp);
+  onDragModeChangePropRef.current = onDragModeChangeProp;
   const runtimeDndAvailable = isRuntimeDndAvailable();
   const nativePointerEventsAvailable =
     typeof window !== "undefined" && "PointerEvent" in window;
@@ -564,7 +602,7 @@ export function GridItem(props: GridItemProps): ReactElement {
   const setElementRef = useCallback(
     (node: HTMLDivElement | null) => {
       elementRef.current = node;
-      console.debug("[GridItem] setElementRef", {
+      logDebug("[GridItem] setElementRef", {
         i,
         node: describeElementForDebug(node),
         connected: node?.isConnected ?? false,
@@ -578,7 +616,7 @@ export function GridItem(props: GridItemProps): ReactElement {
         }
 
         const handleElement = handle && node ? node.querySelector(handle) : null;
-      console.debug("[GridItem] setElementRef: sortable handle assigned", {
+      logDebug("[GridItem] setElementRef: sortable handle assigned", {
         i,
         handle,
         handleElement: describeElementForDebug(handleElement)
@@ -775,7 +813,7 @@ export function GridItem(props: GridItemProps): ReactElement {
       clientX?: number,
       clientY?: number
     ) => {
-      console.debug("[GridItem] emitDragStart", { i, skipThreshold, clientX, clientY, newPosition });
+      logDebug("[GridItem] emitDragStart", { i, skipThreshold, clientX, clientY, newPosition });
       dragPositionRef.current = newPosition;
       if (clientX !== undefined && clientY !== undefined) {
         initialDragClientRef.current = { x: clientX, y: clientY };
@@ -793,6 +831,9 @@ export function GridItem(props: GridItemProps): ReactElement {
       dragPendingRef.current = false;
       thresholdExceededRef.current = true;
 
+      // Lock the drag mode so subsequent CTRL/CMD presses don't change it.
+      lockedModeRef.current ??= dragModeRef.current;
+
       if (!onDragStartProp) {
         return;
       }
@@ -806,11 +847,12 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
-      console.debug("[GridItem] calling onDragStartProp", i, newX, newY);
+      logDebug("[GridItem] calling onDragStartProp", i, newX, newY);
       onDragStartProp(i, newX, newY, {
         e: event,
         node,
-        newPosition
+        newPosition,
+        mode: lockedModeRef.current
       });
     },
     [
@@ -833,7 +875,7 @@ export function GridItem(props: GridItemProps): ReactElement {
       clientX?: number,
       clientY?: number
     ) => {
-      console.debug("[GridItem] emitDragMove", { i, deltaX, deltaY, clientX, clientY });
+      logDebug("[GridItem] emitDragMove", { i, deltaX, deltaY, clientX, clientY });
       if (!draggingRef.current && !dragPendingRef.current) {
         return;
       }
@@ -855,6 +897,8 @@ export function GridItem(props: GridItemProps): ReactElement {
         dragPendingRef.current = false;
 
         if (onDragStartProp) {
+          // Lock mode when threshold is exceeded (drag actually starts).
+          lockedModeRef.current ??= dragModeRef.current;
           const rawPos = calcXYRaw(
             positionParams,
             dragPositionRef.current.top,
@@ -867,11 +911,12 @@ export function GridItem(props: GridItemProps): ReactElement {
             rawPos.y,
             getConstraintContext()
           );
-          console.debug("[GridItem] emitting onDragStart from pending state", i, startX, startY);
+          logDebug("[GridItem] emitting onDragStart from pending state", i, startX, startY);
           onDragStartProp(i, startX, startY, {
             e: event,
             node,
-            newPosition: dragPositionRef.current
+            newPosition: dragPositionRef.current,
+            mode: lockedModeRef.current
           });
         }
       }
@@ -909,11 +954,12 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
-      console.debug("[GridItem] calling onDragProp", i, newX, newY);
+      logDebug("[GridItem] calling onDragProp", i, newX, newY);
       onDragProp(i, newX, newY, {
         e: event,
         node,
-        newPosition
+        newPosition,
+        mode: lockedModeRef.current ?? dragModeRef.current
       });
     },
     [
@@ -936,7 +982,7 @@ export function GridItem(props: GridItemProps): ReactElement {
 
   const emitDragStop = useCallback(
     (event: Event, node: HTMLElement) => {
-      console.debug("[GridItem] emitDragStop", { i, eventType: event?.type });
+      logDebug("[GridItem] emitDragStop", { i, eventType: event?.type });
       if (!draggingRef.current && !dragPendingRef.current) {
         return;
       }
@@ -972,12 +1018,17 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
-      console.debug("[GridItem] calling onDragStopProp", i, newX, newY);
+      logDebug("[GridItem] calling onDragStopProp", i, newX, newY);
       onDragStopProp(i, newX, newY, {
         e: event,
         node,
-        newPosition
+        newPosition,
+        mode: lockedModeRef.current ?? dragModeRef.current
       });
+
+      // Reset drag-mode state after drag ends.
+      lockedModeRef.current = null;
+      dragModeRef.current = "INNER_GRID_MOVE";
     },
     [
       onDragStopProp,
@@ -996,7 +1047,7 @@ export function GridItem(props: GridItemProps): ReactElement {
       data: ResizeCallbackData,
       origin: Position
     ) => {
-      console.debug("[GridItem] emitResize", { i, handlerName, data, origin });
+      logDebug("[GridItem] emitResize", { i, handlerName, data, origin });
       const handler =
         handlerName === "onResizeStart"
           ? onResizeStartProp
@@ -1007,7 +1058,7 @@ export function GridItem(props: GridItemProps): ReactElement {
       resizePositionRef.current = data.size as Position;
 
       if (!handler) {
-        console.debug("[GridItem] emitResize: no handler", handlerName);
+        logDebug("[GridItem] emitResize: no handler", handlerName);
         return;
       }
 
@@ -1034,7 +1085,7 @@ export function GridItem(props: GridItemProps): ReactElement {
         getConstraintContext()
       );
 
-      console.debug("[GridItem] calling resize handler", { i, handlerName, newW, newH, updatedSize });
+      logDebug("[GridItem] calling resize handler", { i, handlerName, newW, newH, updatedSize });
       handler(i, newW, newH, {
         e: event,
         node: data.node,
@@ -1060,42 +1111,51 @@ export function GridItem(props: GridItemProps): ReactElement {
     resizePositionRef.current = { top: 0, left: 0, width: 0, height: 0 };
   }, []);
 
-  useRuntimeDragDropMonitor({
+    useRuntimeDragDropMonitor({
     onDragStart: (event) => {
-      console.debug("[GridItem] runtime onDragStart", { i, event });
+      logDebug("[GridItem] runtime onDragStart", { i, event });
+
+      // Handle resize.
       const resizeData = getGridItemResizeData(event.operation.source?.data);
-      if (!supportsDndKitResize || !resizeData || resizeData.itemId !== i) {
-        console.debug("[GridItem] runtime onDragStart: ignored", { supportsDndKitResize, resizeData });
+      if (supportsDndKitResize && resizeData?.itemId === i) {
+        const node = elementRef.current;
+        if (!node) {
+          logDebug("[GridItem] runtime onDragStart: no node");
+          return;
+        }
+
+        const origin = calcGridItemPosition(positionParams, x, y, w, h);
+        activeDndResizeRef.current = {
+          axis: resizeData.axis,
+          node,
+          origin,
+          initialPointer: (() => {
+            const ae = event.operation.activatorEvent as (MouseEvent | null);
+            return ae ? { x: ae.clientX ?? 0, y: ae.clientY ?? 0 } : { x: 0, y: 0 };
+          })()
+        };
+        setResizing(true);
+
+        emitResize(
+          "onResizeStart",
+          getRuntimeInteractionEvent(event),
+          { node, size: origin, handle: resizeData.axis },
+          origin
+        );
         return;
       }
 
-      const node = elementRef.current;
-      if (!node) {
-        console.debug("[GridItem] runtime onDragStart: no node");
+      // Handle drag: lock drag mode when dnd-kit activates the drag.
+      const dragData = getGridItemDragData(event.operation.source?.data);
+      if (supportsDndKitDrag && dragData?.itemId === i) {
+        lockedModeRef.current ??= dragModeRef.current;
         return;
       }
 
-      const origin = calcGridItemPosition(positionParams, x, y, w, h);
-      activeDndResizeRef.current = {
-        axis: resizeData.axis,
-        node,
-        origin,
-        initialPointer: (() => {
-          const ae = event.operation.activatorEvent as (MouseEvent | null);
-          return ae ? { x: ae.clientX ?? 0, y: ae.clientY ?? 0 } : { x: 0, y: 0 };
-        })()
-      };
-      setResizing(true);
-
-      emitResize(
-        "onResizeStart",
-        getRuntimeInteractionEvent(event),
-        { node, size: origin, handle: resizeData.axis },
-        origin
-      );
+      logDebug("[GridItem] runtime onDragStart: ignored", { supportsDndKitResize, resizeData });
     },
     onDragMove: (event) => {
-      console.debug("[GridItem] runtime onDragMove", { i, event });
+      logDebug("[GridItem] runtime onDragMove", { i, event });
       const session = activeDndResizeRef.current;
       const resizeData = getGridItemResizeData(event.operation.source?.data);
       if (
@@ -1105,7 +1165,7 @@ export function GridItem(props: GridItemProps): ReactElement {
         resizeData.itemId !== i ||
         resizeData.axis !== session.axis
       ) {
-        console.debug("[GridItem] runtime onDragMove: ignored", { session, resizeData });
+        logDebug("[GridItem] runtime onDragMove: ignored", { session, resizeData });
         return;
       }
 
@@ -1133,53 +1193,62 @@ export function GridItem(props: GridItemProps): ReactElement {
       );
     },
     onDragEnd: (event) => {
-      console.debug("[GridItem] runtime onDragEnd", { i, event });
+      logDebug("[GridItem] runtime onDragEnd", { i, event });
+
+      // Handle resize end.
       const session = activeDndResizeRef.current;
       const resizeData = getGridItemResizeData(event.operation.source?.data);
       if (
-        !session ||
-        !supportsDndKitResize ||
-        !resizeData ||
-        resizeData.itemId !== i ||
-        resizeData.axis !== session.axis
+        session &&
+        supportsDndKitResize &&
+        resizeData?.itemId === i &&
+        resizeData?.axis === session.axis
       ) {
-        console.debug("[GridItem] runtime onDragEnd: ignored", { session, resizeData });
-        return;
-      }
+        // Same stale-transform fix for dragend: use nativeEvent (pointerup)
+        // clientX/Y minus initialPointer for the final accurate delta.
+        const nativeEnd =
+          event.nativeEvent instanceof PointerEvent ? event.nativeEvent : null;
+        const endTransform = nativeEnd
+          ? {
+              x: nativeEnd.clientX - session.initialPointer.x,
+              y: nativeEnd.clientY - session.initialPointer.y
+            }
+          : event.operation.transform;
 
-      // Same stale-transform fix for dragend: use nativeEvent (pointerup)
-      // clientX/Y minus initialPointer for the final accurate delta.
-      const nativeEnd =
-        event.nativeEvent instanceof PointerEvent ? event.nativeEvent : null;
-      const endTransform = nativeEnd
-        ? {
-            x: nativeEnd.clientX - session.initialPointer.x,
-            y: nativeEnd.clientY - session.initialPointer.y
-          }
-        : event.operation.transform;
+        const nextCandidate = event.canceled
+          ? session.origin
+          : createResizeCandidate(
+              session.origin,
+              resizeData.axis,
+              endTransform.x / transformScale,
+              endTransform.y / transformScale
+            );
 
-      const nextCandidate = event.canceled
-        ? session.origin
-        : createResizeCandidate(
-            session.origin,
-            resizeData.axis,
-            endTransform.x / transformScale,
-            endTransform.y / transformScale
-          );
+        if (event.canceled) {
+          onResizeCancelProp?.(i);
+          clearDndResizeState();
+          return;
+        }
 
-      if (event.canceled) {
-        onResizeCancelProp?.(i);
+        emitResize(
+          "onResizeStop",
+          getRuntimeInteractionEvent(event),
+          { node: session.node, size: nextCandidate, handle: resizeData.axis },
+          session.origin
+        );
         clearDndResizeState();
         return;
       }
 
-      emitResize(
-        "onResizeStop",
-        getRuntimeInteractionEvent(event),
-        { node: session.node, size: nextCandidate, handle: resizeData.axis },
-        session.origin
-      );
-      clearDndResizeState();
+      // Handle drag end: reset drag-mode state.
+      const dragData = getGridItemDragData(event.operation.source?.data);
+      if (supportsDndKitDrag && dragData?.itemId === i) {
+        lockedModeRef.current = null;
+        dragModeRef.current = "INNER_GRID_MOVE";
+        return;
+      }
+
+      logDebug("[GridItem] runtime onDragEnd: ignored", { session, resizeData });
     }
   });
 
@@ -1461,19 +1530,19 @@ export function GridItem(props: GridItemProps): ReactElement {
 
   useEffect(() => {
     if (!supportsDndKitDrag) {
-      console.debug("[GridItem] sortable handle effect: disabled", { i });
+      logDebug("[GridItem] sortable handle effect: disabled", { i });
       sortableHandleRef(null);
       return;
     }
 
     const node = elementRef.current;
     if (!node) {
-      console.debug("[GridItem] sortable handle effect: no node", { i, handle });
+      logDebug("[GridItem] sortable handle effect: no node", { i, handle });
       return;
     }
 
     const handleElement = handle ? node.querySelector(handle) : null;
-    console.debug("[GridItem] sortable handle effect: applied", {
+    logDebug("[GridItem] sortable handle effect: applied", {
       i,
       handle,
       node: describeElementForDebug(node),
@@ -1482,7 +1551,7 @@ export function GridItem(props: GridItemProps): ReactElement {
     sortableHandleRef(handleElement instanceof Element ? handleElement : null);
 
     return () => {
-      console.debug("[GridItem] sortable handle effect: cleanup", { i });
+      logDebug("[GridItem] sortable handle effect: cleanup", { i });
       sortableHandleRef(null);
     };
   }, [supportsDndKitDrag, handle, i, sortableHandleRef]);
@@ -1494,7 +1563,7 @@ export function GridItem(props: GridItemProps): ReactElement {
 
     const node = elementRef.current;
     if (!node) {
-      console.debug("[GridItem] sortable rebind skipped: no node", {
+      logDebug("[GridItem] sortable rebind skipped: no node", {
         i,
         x,
         y,
@@ -1507,7 +1576,7 @@ export function GridItem(props: GridItemProps): ReactElement {
     }
 
     const handleElement = handle ? node.querySelector(handle) : null;
-    console.debug("[GridItem] sortable rebind after geometry/state change", {
+    logDebug("[GridItem] sortable rebind after geometry/state change", {
       i,
       x,
       y,
@@ -1579,6 +1648,118 @@ export function GridItem(props: GridItemProps): ReactElement {
       clearResizeSession();
     };
   }, [clearDragSession, clearResizeSession]);
+
+  /**
+   * Handle-selection tracking: monitors CTRL/CMD key state while the drag
+   * handle is pressed (pointerdown) but before dragging has started.
+   * Works for both the dnd-kit and native-fallback drag paths.
+   */
+  useEffect(() => {
+    if (!isDraggable || isStatic) {
+      return;
+    }
+
+    const node = elementRef.current;
+    if (!node) {
+      return;
+    }
+
+    const onHandlePointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) {
+        return;
+      }
+
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (!target) {
+        return;
+      }
+
+      // Honor cancel/handle selectors — only activate when hitting the drag handle.
+      if (dragCancelSelector && target.closest(dragCancelSelector)) {
+        return;
+      }
+      if (handle && !target.closest(handle)) {
+        return;
+      }
+
+      // Set initial mode from the CTRL/CMD state at pointerdown time.
+      dragModeRef.current = e.ctrlKey || e.metaKey ? "CROSS_GRID_MOVE" : "INNER_GRID_MOVE";
+
+      const ownerDocument = node.ownerDocument ?? document;
+
+      // Clean up any leftover listeners from a previous incomplete interaction.
+      if (keyListenerCleanupRef.current) {
+        keyListenerCleanupRef.current();
+        keyListenerCleanupRef.current = null;
+      }
+
+      const onKeyDown = (keyEvent: KeyboardEvent) => {
+        // Ignore once the drag has started and mode is locked.
+        if (lockedModeRef.current !== null) {
+          return;
+        }
+        if (keyEvent.key !== "Control" && keyEvent.key !== "Meta") {
+          return;
+        }
+        if (dragModeRef.current === "CROSS_GRID_MOVE") {
+          return;
+        }
+        dragModeRef.current = "CROSS_GRID_MOVE";
+        onDragModeChangePropRef.current?.(iRef.current, "CROSS_GRID_MOVE", keyEvent);
+      };
+
+      const onKeyUp = (keyEvent: KeyboardEvent) => {
+        if (lockedModeRef.current !== null) {
+          return;
+        }
+        if (keyEvent.key !== "Control" && keyEvent.key !== "Meta") {
+          return;
+        }
+        if (dragModeRef.current === "INNER_GRID_MOVE") {
+          return;
+        }
+        dragModeRef.current = "INNER_GRID_MOVE";
+        onDragModeChangePropRef.current?.(iRef.current, "INNER_GRID_MOVE", keyEvent);
+      };
+
+      const onPointerRelease = (releaseEvent: PointerEvent) => {
+        if (keyListenerCleanupRef.current) {
+          keyListenerCleanupRef.current();
+          keyListenerCleanupRef.current = null;
+        }
+        // Reset mode only if drag never started (no lock applied).
+        if (lockedModeRef.current === null) {
+          if (dragModeRef.current === "CROSS_GRID_MOVE") {
+            // Handle released without dragging — notify consumer mode is reset.
+            onDragModeChangePropRef.current?.(iRef.current, "INNER_GRID_MOVE", releaseEvent);
+          }
+          dragModeRef.current = "INNER_GRID_MOVE";
+        }
+      };
+
+      ownerDocument.addEventListener("keydown", onKeyDown);
+      ownerDocument.addEventListener("keyup", onKeyUp);
+      ownerDocument.addEventListener("pointerup", onPointerRelease);
+      ownerDocument.addEventListener("pointercancel", onPointerRelease);
+
+      keyListenerCleanupRef.current = () => {
+        ownerDocument.removeEventListener("keydown", onKeyDown);
+        ownerDocument.removeEventListener("keyup", onKeyUp);
+        ownerDocument.removeEventListener("pointerup", onPointerRelease);
+        ownerDocument.removeEventListener("pointercancel", onPointerRelease);
+      };
+    };
+
+    node.addEventListener("pointerdown", onHandlePointerDown);
+
+    return () => {
+      node.removeEventListener("pointerdown", onHandlePointerDown);
+      if (keyListenerCleanupRef.current) {
+        keyListenerCleanupRef.current();
+        keyListenerCleanupRef.current = null;
+      }
+    };
+  }, [isDraggable, isStatic, handle, dragCancelSelector]);
 
   useEffect(() => {
     if (!droppingPosition) {
@@ -1725,7 +1906,7 @@ export function GridItem(props: GridItemProps): ReactElement {
       }),
       onPointerDownCapture: (event: React.PointerEvent<HTMLElement>) => {
         const node = elementRef.current;
-        console.debug("[GridItem] pointerdown capture", {
+        logDebug("[GridItem] pointerdown capture", {
           i,
           target: describeElementForDebug(event.target),
           currentTarget: describeElementForDebug(event.currentTarget),
@@ -1750,7 +1931,7 @@ export function GridItem(props: GridItemProps): ReactElement {
         childOnPointerDownCapture?.(event);
       },
       onMouseDownCapture: (event: React.MouseEvent<HTMLElement>) => {
-        console.debug("[GridItem] mousedown capture", {
+        logDebug("[GridItem] mousedown capture", {
           i,
           target: describeElementForDebug(event.target),
           currentTarget: describeElementForDebug(event.currentTarget),
@@ -1763,7 +1944,7 @@ export function GridItem(props: GridItemProps): ReactElement {
         childOnMouseDownCapture?.(event);
       },
       onClickCapture: (event: React.MouseEvent<HTMLElement>) => {
-        console.debug("[GridItem] click capture", {
+        logDebug("[GridItem] click capture", {
           i,
           target: describeElementForDebug(event.target),
           currentTarget: describeElementForDebug(event.currentTarget),

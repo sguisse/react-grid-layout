@@ -169,12 +169,21 @@ export interface ReactDraggableCallbackData {
 }
 
 /**
+ * Describes the drag move mode toggled by CTRL/CMD key on handle selection.
+ * - 'INNER_GRID_MOVE': standard move within the same grid (default)
+ * - 'CROSS_GRID_MOVE': cross-grid transfer mode activated by CTRL/CMD
+ */
+export type DragMoveMode = "INNER_GRID_MOVE" | "CROSS_GRID_MOVE";
+
+/**
  * Grid-level drag event data.
  */
 export interface GridDragEvent {
   e: Event;
   node: HTMLElement;
   newPosition: PartialPosition;
+  /** The drag move mode locked at the start of the drag. */
+  mode?: DragMoveMode;
 }
 
 /**
@@ -223,6 +232,7 @@ export type CompactType = "horizontal" | "vertical" | "wrap" | null;
  * @param placeholder - The placeholder item during drag/resize (null at start)
  * @param event - The DOM event that triggered the change
  * @param element - The DOM element being manipulated (null if not applicable)
+ * @param mode - The drag move mode locked at drag start (drag events only)
  */
 export type EventCallback = (
   layout: Layout,
@@ -230,7 +240,26 @@ export type EventCallback = (
   newItem: LayoutItem | null,
   placeholder: LayoutItem | null,
   event: Event,
-  element: HTMLElement | null
+  element: HTMLElement | null,
+  mode?: DragMoveMode
+) => void;
+
+/**
+ * Callback fired when the drag move mode toggles via CTRL/CMD key press or
+ * release while the drag handle is selected (before dragging starts).
+ *
+ * @param layout - The current layout at the time of the mode change
+ * @param item - The layout item whose handle is selected
+ * @param mode - The new drag move mode
+ * @param event - The event that triggered the change (KeyboardEvent for key
+ *   press/release, PointerEvent when the handle is released without dragging,
+ *   or null when fired programmatically).
+ */
+export type DragModeChangeCallback = (
+  layout: Layout,
+  item: LayoutItem | null,
+  mode: DragMoveMode,
+  event: Event | null
 ) => void;
 
 /**

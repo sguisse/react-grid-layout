@@ -35,6 +35,8 @@ export type {
   // Callbacks
   EventCallback,
   OnLayoutChangeCallback,
+  DragMoveMode,
+  DragModeChangeCallback,
 
   // Composable interfaces
   Compactor,

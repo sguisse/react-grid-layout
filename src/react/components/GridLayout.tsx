@@ -14,6 +14,7 @@ import React, {
   type CSSProperties,
   type DragEvent as ReactDragEvent
 } from "react";
+import { createPortal } from "react-dom";
 import { deepEqual } from "fast-equals";
 import clsx from "clsx";
 import {
@@ -39,7 +40,9 @@ import type {
   PositionStrategy,
   Compactor,
   LayoutConstraint,
-  EventCallback
+  EventCallback,
+  DragMoveMode,
+  DragModeChangeCallback
 } from "../../core/types.js";
 import {
   defaultGridConfig,
@@ -79,6 +82,7 @@ import {
   type ResizeHandle
 } from "./GridItem.js";
 import { useGridLayout } from "../hooks/useGridLayout.js";
+import { logDebug } from "../utils/log.js";
 
 export interface GridLayoutProps {
   children: React.ReactNode;
@@ -103,6 +107,21 @@ export interface GridLayoutProps {
   onResizeStart?: EventCallback;
   onResize?: EventCallback;
   onResizeStop?: EventCallback;
+  /**
+   * Called when the drag move mode changes via CTRL/CMD key press or release
+   * while the drag handle is held down (before dragging has started).
+   * Mode is CROSS_GRID_MOVE when CTRL/CMD is pressed, INNER_GRID_MOVE when released.
+   */
+  onDragModeChange?: DragModeChangeCallback;
+  /** Custom icon/node to render for the cross-grid '+' indicator. If omitted, a simple "+" is used. */
+  crossGridIcon?: React.ReactNode;
+  /** Called when a cross-grid drag is cancelled because the drop wasn't over a different grid. */
+  onCrossDropRejected?: (
+    fromLayout: Layout,
+    item: LayoutItem | null,
+    pointer?: { x: number; y: number } | null,
+    e?: Event | null
+  ) => void;
   onDrop?: (layout: Layout, item: LayoutItem | undefined, e: Event) => void;
   onDropDragOver?: (
     e: ReactDragEvent
@@ -265,6 +284,8 @@ interface ActiveDndDragSession {
     w: number;
     h: number;
   };
+  /** Drag move mode locked at the time dnd-kit activates the drag. */
+  mode: DragMoveMode;
 }
 
 function getGridItemDragData(
@@ -308,7 +329,10 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     onDrop: onDropProp = noop,
     onDropDragOver: onDropDragOverProp = noop,
     externalDropMode = "passive",
-    onExternalPreview: onExternalPreviewProp = noop
+    onExternalPreview: onExternalPreviewProp = noop,
+    onDragModeChange: onDragModeChangeProp,
+    crossGridIcon,
+    onCrossDropRejected: onCrossDropRejectedProp = noop
   } = props;
 
   const gridConfig: GridConfig = useMemo(
@@ -389,6 +413,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     null
   );
   const [dragOverlayId, setDragOverlayId] = useState<string | null>(null);
+  const [showCrossPlus, setShowCrossPlus] = useState<boolean>(false);
+  const [plusPortalCoords, setPlusPortalCoords] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activeDndDragRef = useRef<ActiveDndDragSession | null>(null);
   const setContainerNode = useCallback(
@@ -485,6 +511,11 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
   const prevCompactTypeRef = useRef<CompactType>(compactType);
   const layoutRef = useRef<Layout>(layout);
   layoutRef.current = layout;
+  // Tracks whether CTRL or CMD key is held. Read at dnd-kit drag-start to determine mode.
+  const ctrlMetaKeyRef = useRef(false);
+  // Stable ref for onDragModeChangeProp so the GridItem callback always calls the latest fn.
+  const onDragModeChangePropRef = useRef(onDragModeChangeProp);
+  onDragModeChangePropRef.current = onDragModeChangeProp;
   const childMap = useMemo(() => {
     const next = new Map<string, ReactElement>();
     React.Children.forEach(children, (child) => {
@@ -557,6 +588,27 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     if (!deepEqual(layout, propsLayout)) {
       onLayoutChange(layout);
     }
+  }, []);
+
+  // Track CTRL/CMD key state globally so the correct drag mode is captured
+  // when dnd-kit fires dragStart (at threshold-exceeded time).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Control" || e.key === "Meta") {
+        ctrlMetaKeyRef.current = true;
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Control" || e.key === "Meta") {
+        ctrlMetaKeyRef.current = false;
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 
   useEffect(() => {
@@ -634,7 +686,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       oldDragItemRef.current = cloneLayoutItem(item);
       oldLayoutRef.current = currentLayout;
       beginDragState(i, x, y);
-      onDragStartProp(currentLayout, item, item, null, data.e, data.node);
+      onDragStartProp(currentLayout, item, item, null, data.e, data.node, data.mode);
     },
     [beginDragState, onDragStartProp]
   );
@@ -667,7 +719,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         allowOverlap
       );
 
-      onDragProp(newLayout, oldDragItem, item, placeholder, data.e, data.node);
+      onDragProp(newLayout, oldDragItem, item, placeholder, data.e, data.node, data.mode);
       updateDragState(i, x, y);
     },
     [
@@ -702,7 +754,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       );
       const finalLayout = compactor.compact(newLayout, cols);
 
-      onDragStopProp(finalLayout, oldDragItem, item, null, data.e, data.node);
+      onDragStopProp(finalLayout, oldDragItem, item, null, data.e, data.node, data.mode);
 
       oldDragItemRef.current = null;
       oldLayoutRef.current = null;
@@ -725,6 +777,70 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     ]
   );
 
+  /**
+   * Passed to each GridItem as its `onDragModeChange` prop.
+   * Forwards the mode-change notification to the consumer's callback.
+   */
+  const onGridItemDragModeChange = useCallback(
+    (itemId: string, mode: DragMoveMode, event: Event | null) => {
+      const currentLayout = layoutRef.current;
+      const item = getLayoutItem(currentLayout, itemId);
+      onDragModeChangePropRef.current?.(currentLayout, item ?? null, mode, event);
+    },
+    []
+  );
+
+  // Show a small green '+' on the drag overlay when in CROSS_GRID_MOVE and
+  // the pointer is hovering over another grid on the page.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    if (!dragOverlayId) {
+      setShowCrossPlus(false);
+      return;
+    }
+
+    const session = activeDndDragRef.current;
+    if (!session || session.mode !== "CROSS_GRID_MOVE") {
+      setShowCrossPlus(false);
+      return;
+    }
+
+    let raf = 0;
+    const onPointerMove = (ev: PointerEvent) => {
+      const x = ev.clientX;
+      const y = ev.clientY;
+      const el = document.elementFromPoint(x, y);
+      const gridEl = el?.closest?.(".react-grid-layout") as HTMLElement | null;
+      const isOverOtherGrid = Boolean(
+        gridEl && containerRef.current && gridEl !== containerRef.current
+      );
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setShowCrossPlus(isOverOtherGrid);
+        setPlusPortalCoords(isOverOtherGrid ? { x, y } : null);
+      });
+
+      // Emit a throttled debug message via the centralized logger.
+      logDebug("[GridLayout] pointerMove", {
+        x,
+        y,
+        element: el ? (el as Element).tagName : null,
+        gridEl: gridEl ? gridEl.className : null,
+        containerIsSame: gridEl === containerRef.current,
+        isOverOtherGrid
+      });
+    };
+
+    document.addEventListener("pointermove", onPointerMove);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      document.removeEventListener("pointermove", onPointerMove);
+      setShowCrossPlus(false);
+      setPlusPortalCoords(null);
+    };
+  }, [dragOverlayId]);
+
   const handleDndKitDragStart = useCallback(
     (
       event: {
@@ -735,21 +851,21 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         nativeEvent?: Event;
       }
     ) => {
-      console.debug("[GridLayout] handleDndKitDragStart", {
+      logDebug("[GridLayout] handleDndKitDragStart", {
         sourceData: event.operation.source?.data,
         activatorEvent: event.operation.activatorEvent,
         nativeEvent: event.nativeEvent
       });
       const dragData = getGridItemDragData(event.operation.source?.data);
       if (!dragData) {
-        console.debug("[GridLayout] handleDndKitDragStart: no dragData");
+        logDebug("[GridLayout] handleDndKitDragStart: no dragData");
         return;
       }
 
       const currentLayout = layoutRef.current;
       const item = getLayoutItem(currentLayout, dragData.itemId);
       if (!item) {
-        console.debug("[GridLayout] handleDndKitDragStart: item not found", dragData);
+        logDebug("[GridLayout] handleDndKitDragStart: item not found", dragData);
         return;
       }
 
@@ -779,19 +895,25 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
           y: item.y,
           w: item.w,
           h: item.h
-        }
+        },
+        // Lock mode at dnd-kit drag-start using the current CTRL/CMD key state.
+        mode: ctrlMetaKeyRef.current ? "CROSS_GRID_MOVE" : "INNER_GRID_MOVE"
       };
-      console.debug("[GridLayout] activeDndDragRef set", activeDndDragRef.current);
+      logDebug("[GridLayout] activeDndDragRef set", activeDndDragRef.current);
       setDragOverlayId(item.i);
 
-      console.debug("[GridLayout] invoking onDragStart callback", item.i, item.x, item.y);
+      // Log ctrl/meta key state for debugging cross-grid activation
+      logDebug("[GridLayout] handleDndKitDragStart ctrl/meta", { ctrlMetaKey: ctrlMetaKeyRef.current, mode: activeDndDragRef.current.mode });
+
+      logDebug("[GridLayout] invoking onDragStart callback", item.i, item.x, item.y);
       onDragStart(item.i, item.x, item.y, {
         e: getDragEventNativeEvent(event),
         node: node ?? containerRef.current ?? document.body,
         newPosition: {
           left: originPosition.left,
           top: originPosition.top
-        }
+        },
+        mode: activeDndDragRef.current.mode
       });
     },
     [getDragEventNativeEvent, getDragSourceElement, onDragStart, positionParams]
@@ -811,7 +933,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         nativeEvent?: Event;
       }
     ) => {
-      console.debug("[GridLayout] handleDndKitDragMove", {
+      logDebug("[GridLayout] handleDndKitDragMove", {
         transform: event.operation.transform,
         to: event.to,
         sourceData: event.operation.source?.data
@@ -819,14 +941,14 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       const session = activeDndDragRef.current;
       const dragData = getGridItemDragData(event.operation.source?.data);
       if (!session || !dragData || session.itemId !== dragData.itemId) {
-        console.debug("[GridLayout] handleDndKitDragMove: session mismatch", { session, dragData });
+        logDebug("[GridLayout] handleDndKitDragMove: session mismatch", { session, dragData });
         return;
       }
 
       const currentLayout = layoutRef.current;
       const item = getLayoutItem(currentLayout, session.itemId);
       if (!item) {
-        console.debug("[GridLayout] handleDndKitDragMove: item not found", session.itemId);
+        logDebug("[GridLayout] handleDndKitDragMove: item not found", session.itemId);
         return;
       }
 
@@ -849,11 +971,12 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       );
       const node = getDragSourceElement(event.operation.source) ?? session.node;
 
-      console.debug("[GridLayout] invoking onDrag", session.itemId, { x, y, newPosition });
+      logDebug("[GridLayout] invoking onDrag", session.itemId, { x, y, newPosition });
       onDrag(session.itemId, x, y, {
         e: getDragEventNativeEvent(event),
         node: node ?? containerRef.current ?? document.body,
-        newPosition
+        newPosition,
+        mode: session.mode
       });
     },
     [getDragEventNativeEvent, getDragSourceElement, getDraggedGridPosition, onDrag]
@@ -874,7 +997,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         nativeEvent?: Event;
       }
     ) => {
-      console.debug("[GridLayout] handleDndKitDragEnd", {
+      logDebug("[GridLayout] handleDndKitDragEnd", {
         canceled: event.canceled,
         transform: event.operation.transform,
         sourceData: event.operation.source?.data
@@ -885,12 +1008,12 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       setDragOverlayId(null);
 
       if (!session || !dragData || session.itemId !== dragData.itemId) {
-        console.debug("[GridLayout] handleDndKitDragEnd: session or dragData mismatch", { session, dragData });
+        logDebug("[GridLayout] handleDndKitDragEnd: session or dragData mismatch", { session, dragData });
         return;
       }
 
       if (event.canceled) {
-        console.debug("[GridLayout] drag canceled for", session.itemId);
+        logDebug("[GridLayout] drag canceled for", session.itemId);
         oldDragItemRef.current = null;
         oldLayoutRef.current = null;
         cancelDragState();
@@ -900,7 +1023,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       const currentLayout = layoutRef.current;
       const item = getLayoutItem(currentLayout, session.itemId);
       if (!item) {
-        console.debug("[GridLayout] handleDndKitDragEnd: item not found", session.itemId);
+        logDebug("[GridLayout] handleDndKitDragEnd: item not found", session.itemId);
         cancelDragState();
         return;
       }
@@ -914,6 +1037,32 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       //    carries the exact final clientX/Y, consistent with initialPointer.
       const nativePointerEnd =
         event.nativeEvent instanceof PointerEvent ? event.nativeEvent : null;
+
+      // If this was a cross-grid drag, ensure the final pointer is over a
+      // different grid than the origin. If not, cancel the move (no transfer).
+      const endX = nativePointerEnd ? nativePointerEnd.clientX : event.to?.x ?? null;
+      const endY = nativePointerEnd ? nativePointerEnd.clientY : event.to?.y ?? null;
+      if (session.mode === "CROSS_GRID_MOVE" && endX !== null && endY !== null) {
+        const elAtEnd = document.elementFromPoint(endX, endY);
+        const gridElAtEnd = elAtEnd?.closest?.(".react-grid-layout") as HTMLElement | null;
+        const isOverOtherGrid = Boolean(
+          gridElAtEnd && containerRef.current && gridElAtEnd !== containerRef.current
+        );
+        logDebug("[GridLayout] handleDndKitDragEnd: cross-grid end hover", { endX, endY, gridElClass: gridElAtEnd?.className ?? null, isOverOtherGrid });
+        if (!isOverOtherGrid) {
+          logDebug("[GridLayout] handleDndKitDragEnd: cross-grid drop not over other grid — canceling move");
+          try {
+            onCrossDropRejectedProp?.(currentLayout, item, { x: endX, y: endY }, nativePointerEnd ?? getDragEventNativeEvent(event));
+          } catch (err) {
+            logDebug("[GridLayout] onCrossDropRejected callback threw", err);
+          }
+          oldDragItemRef.current = null;
+          oldLayoutRef.current = null;
+          cancelDragState();
+          return;
+        }
+      }
+
       const endTransform = nativePointerEnd
         ? {
             x: nativePointerEnd.clientX - session.initialPointer.x,
@@ -928,11 +1077,12 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       );
       const node = getDragSourceElement(event.operation.source) ?? session.node;
 
-      console.debug("[GridLayout] invoking onDragStop", session.itemId, { x, y, newPosition });
+      logDebug("[GridLayout] invoking onDragStop", session.itemId, { x, y, newPosition });
       onDragStop(session.itemId, x, y, {
         e: getDragEventNativeEvent(event),
         node: node ?? containerRef.current ?? document.body,
-        newPosition
+        newPosition,
+        mode: session.mode
       });
     },
     [
@@ -1194,7 +1344,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
           onExternalPreviewProp(placeholder);
         } catch (err) {
           // Swallow any errors in the passive preview to avoid breaking drags
-          console.debug("computePlaceholder failed", err);
+          logDebug("computePlaceholder failed", err);
         }
         return;
       }
@@ -1333,6 +1483,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
           onDragStart={isDroppingItem ? undefined : onDragStart}
           onDrag={isDroppingItem ? undefined : onDrag}
           onDragStop={isDroppingItem ? undefined : onDragStop}
+          onDragModeChange={isDroppingItem ? undefined : onGridItemDragModeChange}
           onResizeStart={onResizeStart}
           onResize={onResize}
           onResizeStop={onResizeStop}
@@ -1383,6 +1534,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       onDragStart,
       onDrag,
       onDragStop,
+      onGridItemDragModeChange,
       onResizeStart,
       onResize,
       onResizeStop,
@@ -1461,7 +1613,7 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       session.origin.h
     );
 
-    return React.cloneElement(child, {
+    const overlayChild = React.cloneElement(child, {
       className: clsx(
         "react-grid-item",
         "react-draggable",
@@ -1470,12 +1622,55 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       ),
       style: {
         ...childStyle,
-        width: size.width,
-        height: size.height,
+        width: "100%",
+        height: "100%",
         touchAction: "none"
       }
     } as Record<string, unknown>);
-  }, [childMap, dragOverlayId, positionParams]);
+
+    const showPlus = session.mode === "CROSS_GRID_MOVE" && showCrossPlus;
+
+    logDebug("[GridLayout] renderDragOverlay", { sessionMode: session.mode, showCrossPlus, showPlus });
+
+    return (
+      <div
+        style={{
+          position: "relative",
+          width: size.width,
+          height: size.height,
+          pointerEvents: "none"
+        }}
+      >
+        {overlayChild}
+        {showPlus && (
+          <div
+            aria-hidden
+            style={{
+              position: "absolute",
+              right: 8,
+              top: 8,
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              background: "#16a34a",
+              color: "#ffffff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 18,
+              fontWeight: 700,
+              pointerEvents: "none",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+              zIndex: 99999,
+              outline: "2px solid rgba(255,255,255,0.9)"
+            }}
+          >
+            {crossGridIcon ?? "+"}
+          </div>
+        )}
+      </div>
+    );
+  }, [childMap, dragOverlayId, positionParams, showCrossPlus]);
 
   const mergedClassName = clsx(layoutClassName, className);
   const mergedStyle: CSSProperties = {
@@ -1483,35 +1678,83 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     ...style
   };
 
+  const portalPosition = useMemo(() => {
+    if (!plusPortalCoords) return null;
+    let left = plusPortalCoords.x + 12; // offset to bottom-right of cursor
+    let top = plusPortalCoords.y + 12;
+    if (typeof window !== "undefined") {
+      left = Math.min(Math.max(0, left), window.innerWidth - 28);
+      top = Math.min(Math.max(0, top), window.innerHeight - 28);
+    }
+    return { left, top };
+  }, [plusPortalCoords]);
+
   return (
-    <DragDropProvider
-      sensors={dndSensors}
-      onDragStart={handleDndKitDragStart}
-      onDragMove={handleDndKitDragMove}
-      onDragEnd={handleDndKitDragEnd}
-    >
-      <div
-        ref={setContainerNode}
-        className={mergedClassName}
-        style={mergedStyle}
-        onDrop={isDroppable ? handleDrop : undefined}
-        onDragLeave={isDroppable ? handleDragLeave : undefined}
-        onDragEnter={isDroppable ? handleDragEnter : undefined}
-        onDragOver={isDroppable ? handleDragOver : undefined}
+    <>
+      <DragDropProvider
+        sensors={dndSensors}
+        onDragStart={handleDndKitDragStart}
+        onDragMove={handleDndKitDragMove}
+        onDragEnd={handleDndKitDragEnd}
       >
-        {React.Children.map(children, (child) => {
-          if (!React.isValidElement(child)) {
-            return null;
-          }
-          return processGridItem(child);
-        })}
-        {isDroppable && droppingDOMNode && processGridItem(droppingDOMNode, true)}
-        {renderPlaceholder()}
-      </div>
-      <DragOverlay disabled={!dragOverlayId} dropAnimation={null}>
-        {renderDragOverlay()}
-      </DragOverlay>
-    </DragDropProvider>
+        <div
+          ref={setContainerNode}
+          className={mergedClassName}
+          style={mergedStyle}
+          onDrop={isDroppable ? handleDrop : undefined}
+          onDragLeave={isDroppable ? handleDragLeave : undefined}
+          onDragEnter={isDroppable ? handleDragEnter : undefined}
+          onDragOver={isDroppable ? handleDragOver : undefined}
+        >
+          {React.Children.map(children, (child) => {
+            if (!React.isValidElement(child)) {
+              return null;
+            }
+            return processGridItem(child);
+          })}
+          {isDroppable && droppingDOMNode && processGridItem(droppingDOMNode, true)}
+          {renderPlaceholder()}
+        </div>
+        <DragOverlay disabled={!dragOverlayId} dropAnimation={null}>
+          {renderDragOverlay()}
+        </DragOverlay>
+      </DragDropProvider>
+
+      {typeof document !== "undefined" &&
+        portalPosition &&
+        dragOverlayId &&
+        activeDndDragRef.current?.mode === "CROSS_GRID_MOVE"
+        ? createPortal(
+            <div
+              id="rgl-cross-plus"
+              data-rgl-cross-plus="true"
+              aria-hidden
+              style={{
+                position: "fixed",
+                left: portalPosition.left,
+                top: portalPosition.top,
+                width: 28,
+                height: 28,
+                borderRadius: 999,
+                background: "#16a34a",
+                color: "#ffffff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 18,
+                fontWeight: 700,
+                pointerEvents: "none",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+                zIndex: 2147483647,
+                outline: "2px solid rgba(255,255,255,0.9)"
+              }}
+            >
+              {crossGridIcon ?? "+"}
+            </div>,
+            document.body
+          )
+        : null}
+    </>
   );
 }
 
