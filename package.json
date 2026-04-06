@@ -205,6 +205,10 @@
         "lines": 65
       }
     },
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx}",
+      "!src/**/*.d.ts"
+    ],
     "transform": {
       "^.+\\.(js|jsx)$": "babel-jest",
       "^.+\\.(ts|tsx)$": [
