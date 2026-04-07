@@ -42,6 +42,8 @@ Notes:
 - Passive mode: `computePlaceholder` receives the current layout, the incoming item metadata and position info and returns a computed LayoutItem (the hypothetical placeholder) without mutating the published layout.
 - Inject-placeholder mode: the grid inserts a transient dropping item into internal state (legacy behavior). The public `onLayoutChange` still filters out the dropping ID so consumers don't observe the transient item in emitted layouts.
 
+- Implementation note: when an internal dnd-kit drag overlay is active (i.e. the library is performing an internal drag), `GridLayout` will suppress passive external previews to avoid competing UI. In that case the component clears any passive preview by calling `onExternalPreview(null)` and early-returns from its drag-over handling (see `src/react/components/GridLayout.tsx`).
+
 ## ✨ How to use the attribute
 
 1. Passive preview (recommended when you want to render your own overlay)

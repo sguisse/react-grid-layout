@@ -83,6 +83,9 @@ import {
 } from "./GridItem.js";
 import { useGridLayout } from "../hooks/useGridLayout.js";
 import { logDebug } from "../utils/log.js";
+import CrossPlus from "./CrossPlus.js";
+import { applyCrossCursor, removeCrossCursor } from "../utils/crossCursor.js";
+import { useCrossPlus } from "../hooks/useCrossPlus.js";
 
 export interface GridLayoutProps {
   children: React.ReactNode;
@@ -413,10 +416,16 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     null
   );
   const [dragOverlayId, setDragOverlayId] = useState<string | null>(null);
-  const [showCrossPlus, setShowCrossPlus] = useState<boolean>(false);
-  const [plusPortalCoords, setPlusPortalCoords] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const activeDndDragRef = useRef<ActiveDndDragSession | null>(null);
+
+  // Cross-plus overlay state/behavior handled by a dedicated hook (initialized
+  // after the refs it depends on).
+  const { showCrossPlus, plusPortalCoords } = useCrossPlus(
+    dragOverlayId,
+    activeDndDragRef,
+    containerRef
+  );
   const setContainerNode = useCallback(
     (node: HTMLDivElement | null) => {
       containerRef.current = node;
@@ -555,6 +564,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     },
     []
   );
+
+
   const getDraggedGridPosition = useCallback(
     (
       session: ActiveDndDragSession,
@@ -612,6 +623,13 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
+  // Ensure cursor override is removed on unmount.
+  useEffect(() => {
+    return () => {
+      removeCrossCursor();
     };
   }, []);
 
@@ -789,61 +807,19 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     (itemId: string, mode: DragMoveMode, event: Event | null) => {
       const currentLayout = layoutRef.current;
       const item = getLayoutItem(currentLayout, itemId);
+      // Change global cursor when cross-grid mode is activated (even
+      // before an actual drag starts) so the user sees the special cursor.
+      if (mode === "CROSS_GRID_MOVE") {
+        applyCrossCursor();
+      } else {
+        removeCrossCursor();
+      }
       onDragModeChangePropRef.current?.(currentLayout, item ?? null, mode, event);
     },
-    []
+    [applyCrossCursor, removeCrossCursor]
   );
 
-  // Show a small green '+' on the drag overlay when in CROSS_GRID_MOVE and
-  // the pointer is hovering over another grid on the page.
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-
-    if (!dragOverlayId) {
-      setShowCrossPlus(false);
-      return;
-    }
-
-    const session = activeDndDragRef.current;
-    if (!session || session.mode !== "CROSS_GRID_MOVE") {
-      setShowCrossPlus(false);
-      return;
-    }
-
-    let raf = 0;
-    const onPointerMove = (ev: PointerEvent) => {
-      const x = ev.clientX;
-      const y = ev.clientY;
-      const el = document.elementFromPoint(x, y);
-      const gridEl = el?.closest?.(".react-grid-layout") as HTMLElement | null;
-      const isOverOtherGrid = Boolean(
-        gridEl && containerRef.current && gridEl !== containerRef.current
-      );
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setShowCrossPlus(isOverOtherGrid);
-        setPlusPortalCoords(isOverOtherGrid ? { x, y } : null);
-      });
-
-      // Emit a throttled debug message via the centralized logger.
-      logDebug("[GridLayout] pointerMove", {
-        x,
-        y,
-        element: el ? (el as Element).tagName : null,
-        gridEl: gridEl ? gridEl.className : null,
-        containerIsSame: gridEl === containerRef.current,
-        isOverOtherGrid
-      });
-    };
-
-    document.addEventListener("pointermove", onPointerMove);
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      document.removeEventListener("pointermove", onPointerMove);
-      setShowCrossPlus(false);
-      setPlusPortalCoords(null);
-    };
-  }, [dragOverlayId]);
+  // Cross-plus overlay is handled by `useCrossPlus` hook above.
 
   const handleDndKitDragStart = useCallback(
     (
@@ -906,6 +882,13 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       logDebug("[GridLayout] activeDndDragRef set", activeDndDragRef.current);
       setDragOverlayId(item.i);
 
+      // Apply cross-grid cursor if mode locked to CROSS_GRID_MOVE at drag-start
+      if (activeDndDragRef.current?.mode === "CROSS_GRID_MOVE") {
+        applyCrossCursor();
+      } else {
+        removeCrossCursor();
+      }
+
       // Log ctrl/meta key state for debugging cross-grid activation
       logDebug("[GridLayout] handleDndKitDragStart ctrl/meta", { ctrlMetaKey: ctrlMetaKeyRef.current, mode: activeDndDragRef.current.mode });
 
@@ -947,6 +930,12 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       if (!session || !dragData || session.itemId !== dragData.itemId) {
         logDebug("[GridLayout] handleDndKitDragMove: session mismatch", { session, dragData });
         return;
+      }
+
+      // Ensure cross-grid cursor persists during drag-move (re-assert in case
+      // another library overrides cursor styles during active drags).
+      if (session.mode === "CROSS_GRID_MOVE") {
+        applyCrossCursor();
       }
 
       const currentLayout = layoutRef.current;
@@ -1010,6 +999,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       const dragData = getGridItemDragData(event.operation.source?.data);
       activeDndDragRef.current = null;
       setDragOverlayId(null);
+      // Remove any injected cross-grid cursor now that drag ended
+      removeCrossCursor();
 
       if (!session || !dragData || session.itemId !== dragData.itemId) {
         logDebug("[GridLayout] handleDndKitDragEnd: session or dragData mismatch", { session, dragData });
@@ -1262,6 +1253,22 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
     (e: ReactDragEvent): void | false => {
       e.preventDefault();
       e.stopPropagation();
+
+      // If an internal dnd-kit drag overlay is active (we're performing an
+      // internal drag), skip the external passive preview. Consumers using
+      // `externalDropMode: 'passive'` receive previews via
+      // `onExternalPreview` — clear that preview while an internal drag is
+      // active so the UI doesn't show competing previews.
+      if (dragOverlayId) {
+        if (externalDropMode === "passive") {
+          try {
+            onExternalPreviewProp(null);
+          } catch (err) {
+            logDebug("onExternalPreview callback threw while clearing preview", err);
+          }
+        }
+        return;
+      }
 
       if (
         isFirefox &&
@@ -1647,30 +1654,15 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
       >
         {overlayChild}
         {showPlus && (
-          <div
-            aria-hidden
+          <CrossPlus
             style={{
               position: "absolute",
-              right: 8,
-              top: 8,
-              width: 28,
-              height: 28,
-              borderRadius: 999,
-              background: "#16a34a",
-              color: "#ffffff",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 18,
-              fontWeight: 700,
-              pointerEvents: "none",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
-              zIndex: 99999,
-              outline: "2px solid rgba(255,255,255,0.9)"
+              right: 5,
+              top: 5,
+              zIndex: 99999
             }}
-          >
-            {crossGridIcon ?? "+"}
-          </div>
+            icon={crossGridIcon}
+          />
         )}
       </div>
     );
@@ -1684,8 +1676,8 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
 
   const portalPosition = useMemo(() => {
     if (!plusPortalCoords) return null;
-    let left = plusPortalCoords.x + 12; // offset to bottom-right of cursor
-    let top = plusPortalCoords.y + 12;
+    let left = plusPortalCoords.x + 5; // offset to bottom-right of cursor
+    let top = plusPortalCoords.y + 5;
     if (typeof window !== "undefined") {
       left = Math.min(Math.max(0, left), window.innerWidth - 28);
       top = Math.min(Math.max(0, top), window.innerHeight - 28);
@@ -1729,32 +1721,17 @@ export function GridLayout(props: GridLayoutProps): ReactElement {
         dragOverlayId &&
         activeDndDragRef.current?.mode === "CROSS_GRID_MOVE"
         ? createPortal(
-            <div
+            <CrossPlus
               id="rgl-cross-plus"
-              data-rgl-cross-plus="true"
-              aria-hidden
+              dataRgl
               style={{
                 position: "fixed",
                 left: portalPosition.left,
                 top: portalPosition.top,
-                width: 28,
-                height: 28,
-                borderRadius: 999,
-                background: "#16a34a",
-                color: "#ffffff",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 18,
-                fontWeight: 700,
-                pointerEvents: "none",
-                boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
-                zIndex: 2147483647,
-                outline: "2px solid rgba(255,255,255,0.9)"
+                zIndex: 2147483647
               }}
-            >
-              {crossGridIcon ?? "+"}
-            </div>,
+              icon={crossGridIcon}
+            />,
             document.body
           )
         : null}

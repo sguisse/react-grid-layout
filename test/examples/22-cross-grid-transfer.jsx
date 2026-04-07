@@ -419,7 +419,6 @@ function TransferGridPanel({
           onDrop={(nextLayout, droppedItem) =>
             onDropToGrid(gridId, nextLayout, droppedItem)
           }
-          crossGridIcon="➕"
         >
           {children}
         </GridLayout>
